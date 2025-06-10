@@ -1,4 +1,4 @@
-requests==2.32.2
+requests==2.32.4
 python-dotenv==1.0.1
 openai==1.65.4
 supabase==2.3.0
