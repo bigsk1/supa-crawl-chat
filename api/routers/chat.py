@@ -2,7 +2,6 @@ from fastapi import APIRouter, Body, Query, HTTPException, status, Path, Depends
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 import os
-import re
 import time
 import uuid
 
@@ -21,38 +20,6 @@ logger = get_logger(__name__)
 # Create router
 router = APIRouter()
 
-
-def _is_simple_greeting_message(text: str) -> bool:
-    """
-    Short small-talk only (word boundaries — substring 'hi' must NOT match inside 'Hillsboro').
-    Long questions are never treated as greetings so RAG/Brave still run.
-    """
-    clean = (text or "").strip().lower()
-    if not clean:
-        return False
-    max_words = max(3, int(os.getenv("CHAT_GREETING_MAX_WORDS", "12")))
-    if len(clean.split()) > max_words:
-        return False
-    patterns = (
-        r"\bhi\b",
-        r"\bhello\b",
-        r"\bhey\b",
-        r"\bgreetings\b",
-        r"\bhowdy\b",
-        r"\bhola\b",
-        r"\bhow\s+are\s+you\b",
-        r"\bhow's\s+it\s+going\b",
-        r"\bhows\s+it\s+going\b",
-        r"\bwhat's\s+up\b",
-        r"\bwhats\s+up\b",
-        r"\bwhat's\s+going\s+on\b",
-        r"\bwhats\s+going\s+on\b",
-        r"\bsup\b",
-        r"\bgood\s+morning\b",
-        r"\bgood\s+afternoon\b",
-        r"\bgood\s+evening\b",
-    )
-    return any(re.search(p, clean) for p in patterns)
 
 # Define models
 class Message(BaseModel):
@@ -183,7 +150,6 @@ async def chat(
     - **profile**: Profile to use
     """
     t0 = time.perf_counter()
-    preview_n = max(0, int(os.getenv("CHAT_LOG_PREVIEW_CHARS", "0")))
     brave_used = False
     brave_chars = 0
     brave_sources: Optional[List[Dict[str, Any]]] = None
@@ -211,10 +177,10 @@ async def chat(
             logger.warning("load_conversation_history: %s", history_error)
             is_first_message = True
             
-        clean_message = chat_request.message.strip().lower()
-        is_greeting = _is_simple_greeting_message(chat_request.message)
+        is_greeting = chat_bot.should_skip_crawl_rag_for_message(chat_request.message)
 
-        # Optional query flag from clients: skip vector search entirely (e.g. small talk)
+        # For true greetings, skip retrieval. Otherwise pull RAG context so we can echo it
+        # in the response payload (the main prompt path inside get_response() also retrieves).
         context = None
         if include_context and not is_greeting:
             try:
@@ -222,10 +188,6 @@ async def chat(
             except Exception as search_error:
                 logger.exception("search_for_context failed: %s", search_error)
                 context = None
-
-        # For greetings, avoid irrelevant RAG snippets
-        if is_greeting:
-            context = None
 
         # Modify the system prompt for the first message to focus on crawled sites
         if is_first_message and not is_greeting:
@@ -254,31 +216,8 @@ async def chat(
                     metadata={"llm_inject": True},
                 )
         
-        # Add a system message with instructions on how to use the context
-        if context and not is_greeting:
-            chat_bot.add_system_message(
-                "IMPORTANT: You have access to information from the user's crawled sites. "
-                "When answering questions, prioritize information from these sources. "
-                "Integrate the information naturally into your responses rather than just listing sources. "
-                "If the user asks about a topic covered in their crawled sites, use that information to provide a detailed, "
-                "accurate response. Only mention that information comes from their crawled sites if it adds value to the response. "
-                "When referencing specific information, include relevant URLs as formatted links using markdown syntax: [link text](URL).",
-                metadata={"llm_inject": True},
-            )
-            
-            # Check if this is a query about an app or specific product
-            if any(term in chat_request.message.lower() for term in ['app', 'application', 'tool', 'software', 'program']):
-                # Add special instructions for app-related queries
-                chat_bot.add_system_message(
-                    "The user is asking about a specific application or software tool. "
-                    "If information about this app is found in the context, provide a comprehensive summary that includes: "
-                    "1. What the app does and its main purpose "
-                    "2. Key features and capabilities "
-                    "3. Technical details if available "
-                    "4. How to get or access the app "
-                    "Make sure to use the information from the context rather than general knowledge.",
-                    metadata={"llm_inject": True},
-                )
+        # The strong "prioritize crawled sites" instruction is now injected inside
+        # ChatBot._prepare_messages_for_llm so the CLI and API grounded the same way.
 
         # Optional Brave Search LLM Context (web grounding) — BRAVE_API_KEY + BRAVE_WEB_CONTEXT
         if not is_greeting:
@@ -356,12 +295,9 @@ async def chat(
 
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
         ctx_n = len(context) if isinstance(context, list) else (0 if context is None else 1)
-        preview = ""
-        if preview_n and chat_request.message:
-            preview = (chat_request.message[:preview_n].replace("\n", " ") + ("…" if len(chat_request.message) > preview_n else ""))
         logger.info(
             "chat_ok session=%s user=%s profile=%s greeting=%s include_ctx=%s ctx_items=%s "
-            "brave=%s brave_chars=%s msg_chars=%s reply_chars=%s ms=%s%s",
+            "brave=%s brave_chars=%s msg_chars=%s reply_chars=%s ms=%s",
             session_id,
             chat_request.user_id or "-",
             chat_request.profile or "default",
@@ -373,7 +309,6 @@ async def chat(
             len(chat_request.message or ""),
             len(response or ""),
             elapsed_ms,
-            (" preview=%r" % preview) if preview else "",
         )
 
         return chat_response

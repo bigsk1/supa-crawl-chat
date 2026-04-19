@@ -27,6 +27,7 @@ import time
 from utils import print_success, print_error, print_warning, print_info
 
 from brave_llm_context import user_requests_brave_explicit
+from chat_intent import is_simple_greeting_message
 
 # Create a rich console
 console = Console()
@@ -40,6 +41,78 @@ configure_logging()
 
 # Create a flag to control verbose output
 VERBOSE_OUTPUT = False
+
+
+def compact_rag_query(raw: str) -> str:
+    """
+    Strip conversational filler so embedding retrieval aligns with short search-box queries
+    and crawled prose (long chatty questions often retrieve unrelated chunks).
+    """
+    s = (raw or "").strip()
+    if len(s) < 4:
+        return s
+    s = re.sub(
+        r"^(hey|hi|hello|howdy|good\s+morning|good\s+afternoon|good\s+evening)[,!\s—:-]*",
+        "",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(
+        r"(?i)\b("
+        r"what\s+can\s+you\s+tell\s+me\s+about|what\s+could\s+you\s+tell\s+me\s+about|"
+        r"can\s+you\s+tell\s+me\s+about|tell\s+me\s+about|"
+        r"what\s+do\s+you\s+know\s+about|what\s+is\s+|what\s+are\s+|"
+        r"i\s+want\s+to\s+know\s+about|"
+        r"could\s+you\s+(tell|explain)(\s+me)?\s*|would\s+you\s+"
+        r")\s*",
+        "",
+        s,
+    )
+    s = re.sub(r"(?i)^(please|thanks|thank\s+you)[,!\s]+", "", s)
+    s = re.sub(r"(?i)\bwhen\s+using\s+", "", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    s = re.sub(r"^[?.!,;:\s]+", "", s)
+    s = re.sub(r"[?.!]+$", "", s).strip()
+    return s if len(s) >= 3 else (raw or "").strip()
+
+
+def _query_suggests_followup(clean_query: str) -> bool:
+    """Uses word boundaries so short tokens (he/it) do not match inside 'hey', 'item', etc."""
+    cq = (clean_query or "").strip().lower()
+    if not cq:
+        return False
+    phrases = (
+        "tell me more",
+        "what about",
+        "how about",
+        "more about",
+        "anything else",
+        "why is",
+        "why are",
+        "how does",
+        "how do",
+        "can you explain",
+        "can you elaborate",
+        "go on",
+        "and then",
+        "what else",
+    )
+    if any(p in cq for p in phrases):
+        return True
+    return bool(
+        re.search(
+            r"\b(he|she|they|them|their|this|that|these|those|it|more|else|other|another|further)\b",
+            cq,
+        )
+    )
+
+
+def _openai_chat_temperature(model: Optional[str], desired: float) -> float:
+    """gpt-5* / o-series reject anything but the default temperature — drop to 1.0 for them."""
+    m = (model or "").lower()
+    if m.startswith(("gpt-5", "o1", "o3", "o4")):
+        return 1.0
+    return desired
 
 
 def _openai_chat_token_kwargs(model: Optional[str], limit: int) -> Dict[str, int]:
@@ -138,10 +211,13 @@ DEFAULT_PROFILES = {
     "default": {
         "name": "default",
         "description": "General-purpose assistant for all sites",
-        "system_prompt": "You are a helpful assistant that answers questions based on the provided context. If the answer is not in the context, say you don't know.",
+        "system_prompt": (
+            "You are a helpful assistant grounded in the provided DATABASE SEARCH RESULTS when present. "
+            "If that section is empty or explicitly says no rows matched, say you lack indexed coverage; "
+            "otherwise answer from the retrieved titles, summaries, and excerpts and cite links."
+        ),
         "search_settings": {
             "sites": [],  # Empty list means search all sites
-            "threshold": 0.5,
             "limit": 5
         }
     }
@@ -203,6 +279,7 @@ def load_profiles_from_directory(profiles_dir="profiles"):
 
     return profiles
 
+
 # Load profiles from the profiles directory
 # CHAT_PROFILES = load_profiles_from_directory()
 
@@ -263,10 +340,16 @@ class ChatBot:
         self.model = model or os.getenv("CHAT_MODEL", "gpt-4o")
 
         # Set up the result limit
-        self.result_limit = result_limit or int(os.getenv("CHAT_RESULT_LIMIT", "5"))
+        self.result_limit = result_limit or int(os.getenv("CHAT_RESULT_LIMIT", "10"))
 
-        # Set up the similarity threshold
-        self.similarity_threshold = similarity_threshold or float(os.getenv("CHAT_SIMILARITY_THRESHOLD", "0.5"))
+        # Similarity threshold: CLI/constructor wins over profile YAML when explicitly passed.
+        # Default 0.3 matches GET /api/search so chat and search behave the same.
+        if similarity_threshold is not None:
+            self._similarity_threshold_explicit = True
+            self.similarity_threshold = float(similarity_threshold)
+        else:
+            self._similarity_threshold_explicit = False
+            self.similarity_threshold = float(os.getenv("CHAT_SIMILARITY_THRESHOLD", "0.3"))
 
         # Set up the session ID
         if session_id:
@@ -305,10 +388,7 @@ class ChatBot:
         console.print(f"Result limit: {self.result_limit}")
         console.print(f"Similarity threshold: {self.similarity_threshold}")
 
-        # Get search settings from the profile
-        self.search_sites = self.profile.get('search_settings', {}).get('sites', [])
-        self.search_threshold = self.profile.get('search_settings', {}).get('threshold', self.similarity_threshold)
-        self.search_limit = self.profile.get('search_settings', {}).get('limit', self.result_limit)
+        # set_profile() already applied search_sites / search_threshold / search_limit
 
         # Print search settings if they differ from the defaults
         if self.search_threshold != self.similarity_threshold:
@@ -317,6 +397,14 @@ class ChatBot:
             console.print(f"[bold blue]Profile search limit:[/bold blue] [green]{self.search_limit}[/green]")
         if self.search_sites:
             console.print(f"[bold blue]Filtering sites:[/bold blue] [green]{', '.join(self.search_sites)}[/green]")
+
+    def _rag_threshold(self) -> float:
+        """Single retrieval threshold for chat — same meaning as GET /api/search `threshold`."""
+        return max(0.0, min(1.0, float(self.search_threshold)))
+
+    def should_skip_crawl_rag_for_message(self, message: str) -> bool:
+        """If True, skip vector search (pure small-talk)."""
+        return is_simple_greeting_message(message)
 
     def load_conversation_history(self):
         """Load conversation history from the database."""
@@ -503,7 +591,7 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
                 response = self.client.chat.completions.create(
                     model=extraction_model,
                     messages=[{"role": "user", "content": prompt}],
-                    temperature=0.3,
+                    temperature=_openai_chat_temperature(extraction_model, 0.3),
                     **_openai_chat_token_kwargs(extraction_model, 100),
                 )
 
@@ -651,9 +739,9 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
                     alt_results = self.crawler.search(
                         query=alt_query,
                         use_embedding=True,
-                        threshold=max(0.5, self.similarity_threshold - 0.2),  # Lower threshold for broader matches
+                        threshold=self._rag_threshold(),
                         limit=self.result_limit,
-                        site_id=None  # Search all sites
+                        site_id=None,
                     )
 
                     if alt_results:
@@ -831,6 +919,12 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
         # Log the search query for debugging
         console.print(f"[blue]Performing regular search for: {query}[/blue]")
 
+        rq = compact_rag_query(query)
+        thr = self._rag_threshold()
+        if rq != query.strip():
+            console.print(f"[blue]Retrieval query (compact): {rq!r}[/blue]")
+        console.print(f"[cyan]RAG threshold: {thr:.2f}[/cyan] (CHAT_SIMILARITY_THRESHOLD; default 0.3 like /api/search)")
+
         # If the profile specifies specific sites to search, filter by site name
         if self.search_sites:
             console.print(f"[blue]Filtering search to {len(self.search_sites)} sites...[/blue]")
@@ -863,9 +957,9 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
 
                         # Use the crawler's search method for each site
                         site_results = self.crawler.search(
-                            query,
+                            rq,
                             limit=self.result_limit,
-                            threshold=max(0.2, self.similarity_threshold - 0.1),  # Lower threshold slightly for better recall
+                            threshold=thr,
                             site_id=site_id
                         )
 
@@ -884,28 +978,50 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
                     console.print("[yellow]No results found across specified sites, searching all sites[/yellow]")
 
         # If no site IDs or no results from site-specific search, do a general search
-        console.print(f"[blue]Searching all sites with query: '{query}'[/blue]")
+        console.print(f"[blue]Searching all sites with query: '{rq}'[/blue]")
 
         # Use the crawler's search method for all sites with a slightly lower threshold
         results = self.crawler.search(
-            query,
+            rq,
             limit=self.result_limit,
-            threshold=max(0.2, self.similarity_threshold - 0.1),  # Lower threshold slightly for better recall
+            threshold=thr,
         )
+
+        # Long chat phrasing can embed poorly; retry once with the original wording
+        if not results and rq != query.strip():
+            console.print(f"[yellow]No hits for compact query; retrying with full user wording[/yellow]")
+            results = self.crawler.search(
+                query.strip(),
+                limit=self.result_limit,
+                threshold=thr,
+            )
 
         if results:
             console.print(f"[green]Found {len(results)} results[/green]")
+            top = results[0]
+            console.print(
+                f"[cyan]Top retrieval: similarity={float(top.get('similarity') or 0):.3f} "
+                f"title={str(top.get('title') or '')[:100]!r}[/cyan]"
+            )
         else:
             # If no results with vector search, try a keyword search
             console.print("[yellow]No results found with semantic search, trying keyword search[/yellow]")
             try:
                 keyword_results = self.crawler.search(
-                    query=query,
+                    query=rq,
                     use_embedding=False,  # Use text search for keywords
                     threshold=0.5,
                     limit=self.result_limit,
                     site_id=None  # Search all sites
                 )
+                if not keyword_results and rq != query.strip():
+                    keyword_results = self.crawler.search(
+                        query=query.strip(),
+                        use_embedding=False,
+                        threshold=0.5,
+                        limit=self.result_limit,
+                        site_id=None,
+                    )
 
                 if keyword_results:
                     console.print(f"[green]Found {len(keyword_results)} keyword results[/green]")
@@ -1000,10 +1116,7 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
             A list of search results.
         """
         try:
-            # Set a lower threshold for broader matches if requested
-            similarity_threshold = self.similarity_threshold
-            if lower_threshold:
-                similarity_threshold = max(0.5, similarity_threshold - 0.2)  # Lower by 0.2 but not below 0.5
+            eff_threshold = self._rag_threshold()
 
             # Get site ID if site patterns are specified
             site_id = None
@@ -1026,7 +1139,7 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
             top_results = self.crawler.search(
                 query=query,
                 use_embedding=True,
-                threshold=similarity_threshold,
+                threshold=eff_threshold,
                 limit=self.result_limit,
                 site_id=site_id
             )
@@ -1045,6 +1158,38 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
         except Exception as e:
             console.print(f"[red]Error retrieving quality pages: {e}[/red]")
             return self._regular_search(query)
+
+    @staticmethod
+    def _strip_nav_boilerplate(text: str) -> str:
+        """Docs-site chunks often start with a nav/TOC menu (bullet lists of links). Drop it
+        so the LLM sees real prose. If the whole chunk is boilerplate, return empty."""
+        if not text:
+            return ""
+        lines = text.splitlines()
+        out: List[str] = []
+        started = False
+        for line in lines:
+            stripped = line.strip()
+            if not started:
+                is_nav = (
+                    not stripped
+                    or stripped.startswith(("#####", "####", "##", "* [", "* ", "- ["))
+                    or stripped.startswith("[Skip to main content]")
+                    or stripped.startswith("[Ollama home page")
+                    or (stripped.startswith("[") and stripped.endswith(")"))
+                )
+                if is_nav:
+                    continue
+                started = True
+            out.append(line)
+        cleaned = "\n".join(out).strip()
+        # Crude link-density check: if most non-empty lines are link bullets, drop.
+        non_empty = [l for l in cleaned.splitlines() if l.strip()]
+        if non_empty:
+            linky = sum(1 for l in non_empty if l.lstrip().startswith(("* [", "- [", "[")))
+            if linky / max(1, len(non_empty)) > 0.6:
+                return ""
+        return cleaned
 
     def format_context(self, results: List[Dict[str, Any]]) -> str:
         """Format the context for the LLM.
@@ -1094,10 +1239,9 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
                 title = result.get("title", "Untitled")
                 url = result.get("url", "")
                 site_name = result.get("site_name", "Unknown site")
-                summary = result.get("summary", "")
-                content = result.get("content", "")
+                summary = (result.get("summary") or "").strip()
+                content = self._strip_nav_boilerplate(result.get("content", "") or "")
 
-                # Clean up the URL by removing chunk fragments
                 if "#chunk-" in url:
                     url = url.split("#chunk-")[0]
 
@@ -1107,11 +1251,10 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
 
                 if summary:
                     context += f"SUMMARY: {summary}\n\n"
-                elif content:
-                    # Create a brief summary from the content if no summary exists
+                if content:
                     brief_content = content[:500] + "..." if len(content) > 500 else content
                     context += f"CONTENT: {brief_content}\n\n"
-                else:
+                if not summary and not content:
                     context += "\n"
 
             # Add a reminder to include URLs in the response when appropriate
@@ -1127,11 +1270,11 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
                 title = result.get("title", "Untitled")
                 url = result.get("url", "")
                 site_name = result.get("site_name", "Unknown site")
-                content = result.get("content", "")
+                content = self._strip_nav_boilerplate(result.get("content", "") or "")
+                summary = (result.get("summary") or "").strip()
                 match_type = result.get("match_type", "keyword_match")
                 similarity = result.get("similarity", 0)
 
-                # Clean up the URL by removing chunk fragments
                 if "#chunk-" in url:
                     url = url.split("#chunk-")[0]
 
@@ -1140,10 +1283,11 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
                 context += f"SOURCE: {site_name}\n"
                 context += f"MATCH TYPE: {match_type} (relevance: {similarity:.2f})\n\n"
 
-                # Include a reasonable amount of content
+                if summary:
+                    sm = summary[:600] + "..." if len(summary) > 600 else summary
+                    context += f"SUMMARY:\n{sm}\n\n"
                 if content:
-                    # Limit content length but ensure we get enough context
-                    max_length = 1000 if i == 1 else 500  # Give more space to the top result
+                    max_length = 1000 if i == 1 else 500
                     formatted_content = content[:max_length] + "..." if len(content) > max_length else content
                     context += f"CONTENT:\n{formatted_content}\n\n"
 
@@ -1173,7 +1317,8 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
                 result_counter += 1
                 title = result.get("title", "Untitled")
                 url = result.get("url", "")
-                content = result.get("content", "")
+                content = self._strip_nav_boilerplate(result.get("content", "") or "")
+                summary = (result.get("summary") or "").strip()
                 similarity = result.get("similarity", 0)
 
                 # Clean up the URL by removing chunk fragments
@@ -1186,11 +1331,20 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
                 context += f"SOURCE: {site_name}\n"
                 context += f"RELEVANCE: {similarity:.2f}\n\n"
 
-                # Include the content with reasonable length limits
+                # Prefer the pre-computed page summary (it describes the actual topic).
+                # Chunk `content` on crawled sites is often nav/footer boilerplate, so summary first.
+                if summary:
+                    max_len = 600 if result_counter <= 3 else 350
+                    sm = summary[:max_len] + "..." if len(summary) > max_len else summary
+                    context += f"SUMMARY:\n{sm}\n\n"
                 if content:
-                    max_length = 800 if result_counter <= 3 else 400  # More content for top results
+                    max_length = 800 if result_counter <= 3 else 400
                     formatted_content = content[:max_length] + "..." if len(content) > max_length else content
                     context += f"CONTENT:\n{formatted_content}\n\n"
+                if not summary and not content:
+                    context += (
+                        "(No stored excerpt for this row — infer relevance from TITLE and URL above.)\n\n"
+                    )
 
                 # Always add a clear separation between results
                 context += "---\n\n"
@@ -1214,20 +1368,10 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
         # Clean the query for processing
         clean_query = query.strip().lower()
 
-        # Check for simple greetings first - use exact word matching to avoid false positives
-        greeting_patterns = [
-            "hi", "hello", "hey", "greetings", "howdy", "hola",
-            "how are you", "how's it going", "what's up", "sup",
-            "good morning", "good afternoon", "good evening"
-        ]
-
-        is_greeting = False
-        for greeting in greeting_patterns:
-            # Use word boundary matching to avoid matching substrings
-            if re.search(r'\b' + greeting + r'\b', clean_query):
-                is_greeting = True
-                console.print(f"[dim]DEBUG: Detected greeting pattern: '{greeting}'[/dim]")
-                break
+        # Skip crawl RAG only for pure small talk (hi/hello/thanks/bye). Substantive questions run RAG.
+        is_greeting = self.should_skip_crawl_rag_for_message(query)
+        if is_greeting:
+            console.print(f"[dim]DEBUG: Skipping crawl RAG for this turn (greeting / small-talk path)[/dim]")
 
         # Add the user message to the conversation history
         self.add_user_message(query)
@@ -1250,32 +1394,17 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
             if last_assistant_message and last_user_message:
                 break
 
-        # Improved follow-up detection
+        # Improved follow-up detection (no bare substring "he" — that matched inside "hey" and broke RAG)
         if last_assistant_message:
-            # Check for common follow-up indicators
-            follow_up_indicators = [
-                "it", "that", "this", "those", "they", "them", "their", "he", "she",
-                "more", "about", "tell me more", "what about", "how about",
-                "explain", "elaborate", "why is", "how does", "can you",
-                "else", "other", "another", "additional", "further", "anything else",
-                "great", "thanks", "thank you", "ok", "okay", "cool", "nice", "good"
-            ]
-
-            # Check if the query contains any follow-up indicators
-            is_followup = any(indicator in clean_query for indicator in follow_up_indicators)
+            is_followup = _query_suggests_followup(clean_query)
 
             # Short queries are often continuations — but not standalone greetings ("howdy", "hi", …).
-            # If we mark those as follow-ups, the greeting fast-path never runs and the model keeps
-            # riffing on the last assistant topic (e.g. Brave/testing instructions).
             if len(clean_query.split()) <= 5 and not is_greeting:
                 is_followup = True
 
             console.print(f"[dim]DEBUG: Follow-up detection: {is_followup}[/dim]")
 
-        # Simple greetings must not count as follow-ups: (1) short queries were always follow-ups if any
-        # prior assistant message existed; (2) substring checks like "he" in "hey" falsely set follow-up.
-        _greet_max = max(3, int(os.getenv("CHAT_GREETING_MAX_WORDS", "12")))
-        if is_greeting and len(clean_query.split()) <= _greet_max:
+        if is_greeting:
             is_followup = False
 
         # Greeting fast-path skips RAG and llm_inject (e.g. Brave web context). Do not use it when:
@@ -1283,7 +1412,7 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
         # - the message is long (not "just hi"), or
         # - the user explicitly asked for web/Brave lookup (run full path even if Brave fetch failed).
         inject_early = self._llm_inject_system_contents_for_current_turn()
-        short_for_greeting = len(clean_query.split()) <= _greet_max
+        short_for_greeting = len(clean_query.split()) <= 6
         asks_web_explicit = user_requests_brave_explicit(query)
 
         # For greetings, don't do complex processing or context search
@@ -1311,7 +1440,7 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=messages,
-                    temperature=0.7,
+                    temperature=_openai_chat_temperature(self.model, 0.7),
                     **_openai_chat_token_kwargs(self.model, _chat_greeting_max_completion_tokens()),
                 )
 
@@ -1390,14 +1519,23 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
                 if site_patterns:
                     console.print(f"[blue]Using site patterns from profile: {site_patterns}[/blue]")
 
-                # Perform direct keyword search
+                rq = compact_rag_query(query)
+                hthr = self._rag_threshold()
                 keyword_results = self.crawler.search(
-                    query=query,
-                    use_embedding=False,  # Use text search for keywords
-                    threshold=0.7,
+                    query=rq,
+                    use_embedding=True,
+                    threshold=hthr,
                     limit=self.result_limit,
-                    site_id=None  # Search all sites
+                    site_id=None,
                 )
+                if not keyword_results and rq != query.strip():
+                    keyword_results = self.crawler.search(
+                        query=query.strip(),
+                        use_embedding=True,
+                        threshold=hthr,
+                        limit=self.result_limit,
+                        site_id=None,
+                    )
 
                 if keyword_results:
                     console.print(f"[green]Found {len(keyword_results)} keyword results[/green]")
@@ -1434,7 +1572,7 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
                 entity_response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "user", "content": entity_prompt}],
-                    temperature=0.3,
+                    temperature=_openai_chat_temperature(self.model, 0.3),
                     **_openai_chat_token_kwargs(self.model, 100),
                 )
 
@@ -1501,6 +1639,7 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
 
         # Format the context
         context = self.format_context(results)
+        has_rag_hits = bool(results) and ("NO RELEVANT DATABASE RESULTS" not in context)
 
         # Add more detailed logging about search results
         if VERBOSE_OUTPUT:
@@ -1562,12 +1701,16 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
                     active_only=True
                 )
 
-                # Format preferences for the system prompt
+                # Format preferences for the system prompt. IMPORTANT: do NOT use the
+                # name `context` here — it shadows the RAG `context` variable built from
+                # `self.format_context(results)` earlier in this method, which silently
+                # replaces the crawled-site context in the final prompt with a preference
+                # row's stored context (usually the user's own earlier query).
                 for pref in db_preferences:
                     pref_type = pref.get("preference_type", "")
                     pref_value = pref.get("preference_value", "")
                     confidence = pref.get("confidence", 0.0)
-                    context = pref.get("context", "")
+                    pref_context = pref.get("context", "")
 
                     # Update the last_used timestamp for this preference
                     self.crawler.db_client.update_preference_last_used(pref.get("id"))
@@ -1577,7 +1720,7 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
                         "type": pref_type,
                         "value": pref_value,
                         "confidence": confidence,
-                        "context": context
+                        "context": pref_context,
                     })
             except Exception as e:
                 console.print(f"[red]Error getting user preferences from database: {e}[/red]")
@@ -1635,108 +1778,68 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
             system_prompt += "\n\nWhen appropriate, reference the user's preferences and background to personalize your responses. Don't force mentioning preferences, but use them to add context and relevance. Balance between addressing their query directly and personalizing based on what you know about them."
 
         inject_blocks = self._llm_inject_system_contents_for_current_turn()
-        web_hint = ""
-        if inject_blocks:
-            web_hint = """
 
-WEB_CONTEXT: Additional system messages may contain BRAVE_WEB_CONTEXT (live web snippets from Brave Search). When those messages are present, you CAN answer from them — do not refuse, and do not claim you cannot search the web or browse. Prefer the user's crawled content in the database context below for their indexed sites; use web context for public-web facts, gaps, missing crawled coverage, or when the user asks for current web information."""
+        # One concise system message. Stacking many IMPORTANT/CRITICAL instructions
+        # confuses chat-tuned models and they start refusing or second-guessing the
+        # provided context. Keep the profile prompt + minimal grounding guidance.
+        system_message = (
+            f"You are acting according to this profile: {self.profile_name}\n\n"
+            f"{system_prompt}\n\n"
+            "When the user's turn includes a CONTEXT section from the crawled database, "
+            "answer using those excerpts and cite URLs as markdown links [label](URL). "
+            "If CONTEXT is empty, say so briefly. Strip '#chunk-N' fragments from URLs. "
+            "Remember prior conversation turns and user preferences."
+        )
 
-        # Create a system message that guides the LLM's behavior
-        system_message = f"""You are acting according to this profile: {self.profile_name}
-{web_hint}
+        messages = [{"role": "system", "content": system_message}]
 
-CRITICAL INSTRUCTION: The "DATABASE SEARCH RESULTS" section contains verified information from a database. This is your PRIMARY source of information. Use this information FIRST before relying on other sources, but aim for a conversational, human-like tone in your responses.
-
-{system_prompt}
-
-GUIDELINES FOR RESPONDING:
-1. Balance information delivery with conversational tone - be informative but natural
-2. For technical terms and project names, always include relevant details from the search results
-3. When referencing information from search results, include the full URL as a link: [Title or description](URL)
-4. Structure your response with a clear summary first, followed by details
-5. If the search included multiple results, synthesize the information rather than listing each source separately
-
-FORMATTING GUIDELINES:
-- For technical content or code, use appropriate markdown formatting (```code blocks```)
-- Use bullet points or numbered lists for multi-step processes or feature lists
-- Bold important terms or concepts using **bold text**
-- Include the source URL when providing specific information: [Read more about this](URL)
-
-IMPORTANT: Pay close attention to the conversation history. If the user refers to something they mentioned earlier,
-make sure to reference that information in your response. Remember user preferences, likes, dislikes, and any
-personal information they've shared during the conversation.
-
-CRITICAL: If the user asks a follow-up question about something you just mentioned in your previous response,
-make sure to provide detailed information about that topic. Never claim ignorance about something you just discussed.
-Always maintain continuity in the conversation.
-"""
-
-        # Create a new list of messages for this specific query
-        messages = [
-            {"role": "system", "content": system_message},
-        ]
-
-        # Add the conversation history (excluding the system message)
-        # Use a sliding window approach to avoid token limit issues
-        MAX_HISTORY_MESSAGES = 20  # Adjust this value based on your needs
-
-        # Get user and assistant messages, excluding the current query
+        # Conversation history (sliding window).
+        MAX_HISTORY_MESSAGES = 20
         history_messages = [
             msg for msg in self.conversation_history
             if msg["role"] != "system" and msg["content"] != query
         ]
-
-        # If we have more messages than the limit, keep only the most recent ones
         if len(history_messages) > MAX_HISTORY_MESSAGES:
-            # Always include the first few messages for context
             first_messages = history_messages[:2]
-            # And the most recent messages
-            recent_messages = history_messages[-(MAX_HISTORY_MESSAGES-2):]
+            recent_messages = history_messages[-(MAX_HISTORY_MESSAGES - 2):]
             history_messages = first_messages + recent_messages
             console.print(f"[dim blue]Using {len(history_messages)} messages from conversation history (truncated)[/dim blue]")
         else:
             console.print(f"[dim blue]Using {len(history_messages)} messages from conversation history[/dim blue]")
-
-        # Add the selected history messages
         for message in history_messages:
-            messages.append({
-                "role": message["role"],
-                "content": message["content"]
-            })
+            messages.append({"role": message["role"], "content": message["content"]})
 
-        # Add the current query
-        messages.append({"role": "user", "content": query})
-
-        # If this is a follow-up question, add a special reminder about the previous response
-        if is_followup and last_assistant_message:
-            messages.append({
-                "role": "system",
-                "content": f"IMPORTANT: This is a follow-up question about something you mentioned in your previous response. Your previous response was:\n\n{last_assistant_message}\n\nMake sure to provide detailed information about the topic the user is asking about."
-            })
-
-        # Add the conversation analysis if available
         if conversation_analysis and conversation_analysis != "No relevant information found.":
             messages.append({
                 "role": "system",
-                "content": f"Relevant information from conversation history:\n{conversation_analysis}"
+                "content": f"Relevant information from conversation history:\n{conversation_analysis}",
             })
 
         for inj in inject_blocks:
             messages.append({"role": "system", "content": inj})
 
-        # Add the context from the database search
-        messages.append({"role": "system", "content": f"Context from database search:\n{context}"})
+        if is_followup and last_assistant_message:
+            messages.append({
+                "role": "system",
+                "content": f"This is a follow-up question about your previous response:\n\n{last_assistant_message}",
+            })
 
-        # Get a response from the LLM
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=0.7,
-            **_openai_chat_token_kwargs(self.model, _chat_max_completion_tokens()),
-        )
+        # Canonical RAG pattern: inline the retrieved context INSIDE the final user turn.
+        # Chat-tuned models consistently ignore RAG when it is buried in a system message
+        # preceded by unrelated conversation history; they ground much better when the
+        # context and the question arrive together as the user's latest turn.
+        if has_rag_hits:
+            user_turn = (
+                f"CONTEXT (from the user's crawled sites):\n{context}\n\n"
+                f"Question: {query}\n\n"
+                "Answer the question using the CONTEXT above. Cite sources as markdown links. "
+                "Do not say you have no database information when CONTEXT lists matching pages."
+            )
+        else:
+            user_turn = query
+        messages.append({"role": "user", "content": user_turn})
 
-        # Extract the response text
-        response_text = response.choices[0].message.content
+        response_text = self._get_llm_response(messages)
 
         # Add the assistant's response to the conversation history
         self.add_assistant_message(response_text)
@@ -2142,7 +2245,7 @@ If there is no relevant information, respond with "No relevant information found
             response = self.client.chat.completions.create(
                 model=analysis_model,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
+                temperature=_openai_chat_temperature(analysis_model, 0.3),
                 **_openai_chat_token_kwargs(analysis_model, 500),
                 timeout=10  # 10 second timeout
             )
@@ -2171,10 +2274,16 @@ If there is no relevant information, respond with "No relevant information found
         self.profile_name = profile_name
         self.profile = self.profiles[profile_name]
 
-        # Update search settings from the profile
-        self.search_sites = self.profile.get('search_settings', {}).get('sites', [])
-        self.search_threshold = self.profile.get('search_settings', {}).get('threshold', self.similarity_threshold)
-        self.search_limit = self.profile.get('search_settings', {}).get('limit', self.result_limit)
+        # Update search settings from the profile (threshold: YAML applies unless CLI set --threshold)
+        ss = self.profile.get("search_settings") or {}
+        self.search_sites = ss.get("sites", [])
+        self.search_limit = ss.get("limit", self.result_limit)
+        if getattr(self, "_similarity_threshold_explicit", False):
+            self.search_threshold = float(self.similarity_threshold)
+        elif "threshold" in ss:
+            self.search_threshold = float(ss["threshold"])
+        else:
+            self.search_threshold = float(self.similarity_threshold)
 
         console.print(f"[green]Using profile: {self.profile['name']} - {self.profile['description']}[/green]")
 
@@ -2222,37 +2331,18 @@ If there is no relevant information, respond with "No relevant information found
         system_prompt += f"\n\nThe current date is {date_str} and the time is {time_str}."
 
         inject_blocks = self._llm_inject_system_contents_for_current_turn()
-        web_hint = ""
-        if inject_blocks:
-            web_hint = """
+        has_hits = bool(context_str) and ("NO RELEVANT DATABASE RESULTS" not in context_str)
 
-WEB_CONTEXT: Additional system messages may contain BRAVE_WEB_CONTEXT (live web snippets). When present, use them — do not refuse or claim you cannot search the web. Prefer DATABASE SEARCH RESULTS for the user's crawled sites; use web context for public web, gaps, or freshness."""
+        # Keep the system message short and non-conflicting. Stacking many "IMPORTANT/CRITICAL"
+        # instructions was making chat models second-guess the context and claim "no info".
+        system_message = (
+            f"{system_prompt}\n\n"
+            "When the user's turn includes a CONTEXT section from the crawled database, answer "
+            "using those excerpts and cite URLs as markdown links [label](URL). If CONTEXT is "
+            "empty, say so briefly. Strip '#chunk-N' fragments from URLs. Remember prior "
+            "conversation turns and user preferences."
+        )
 
-        # Create a system message that guides the LLM's behavior
-        system_message = f"""You are acting according to this profile: {self.profile_name}
-{web_hint}
-
-{system_prompt}
-
-When answering, use the provided context and conversation history.
-If the answer is in the context, respond based on that information.
-If the answer is not in the context but you can infer it from the conversation history, use that information.
-If the answer is not in either, acknowledge that you don't have specific information about that topic,
-but you can provide general information if relevant.
-
-IMPORTANT: Pay close attention to the conversation history. If the user refers to something they mentioned earlier,
-make sure to reference that information in your response. Remember user preferences, likes, dislikes, and any
-personal information they've shared during the conversation.
-
-CRITICAL: If the user asks a follow-up question about something you just mentioned in your previous response,
-make sure to provide detailed information about that topic. Never claim ignorance about something you just discussed.
-Always maintain continuity in the conversation.
-
-When presenting URLs to users, make sure to remove any '#chunk-X' fragments from the URLs to make them cleaner.
-For example, change 'https://example.com/page/#chunk-0' to 'https://example.com/page/'.
-"""
-
-        # Create a new list of messages for this specific query
         messages = [
             {"role": "system", "content": system_message},
         ]
@@ -2285,28 +2375,21 @@ For example, change 'https://example.com/page/#chunk-0' to 'https://example.com/
                 "content": message["content"]
             })
 
-        # Add the current query
-        messages.append({"role": "user", "content": query})
-
-        # If this is a follow-up question, add a special reminder about the previous response
-        last_assistant_message = None
-        if is_followup and len(history_messages) > 0:
-            for msg in reversed(history_messages):
-                if msg["role"] == "assistant":
-                    last_assistant_message = msg["content"]
-                    break
-
-            if last_assistant_message:
-                messages.append({
-                    "role": "system",
-                    "content": f"IMPORTANT: This is a follow-up question about something you mentioned in your previous response. Your previous response was:\n\n{last_assistant_message}\n\nMake sure to provide detailed information about the topic the user is asking about."
-                })
-
         for inj in inject_blocks:
             messages.append({"role": "system", "content": inj})
 
-        # Add the context from the database search
-        messages.append({"role": "system", "content": f"DATABASE SEARCH RESULTS:\n{context_str}"})
+        # Inline the retrieved context inside the user turn — that's how chat-tuned models
+        # reliably ground RAG answers (system-message stuffing was being ignored).
+        if has_hits:
+            user_turn = (
+                f"CONTEXT (from the user's crawled sites):\n{context_str}\n\n"
+                f"Question: {query}\n\n"
+                "Answer the question using the CONTEXT above. Cite sources as markdown links. "
+                "Do not say you have no database information when CONTEXT lists matching pages."
+            )
+        else:
+            user_turn = query
+        messages.append({"role": "user", "content": user_turn})
 
         return messages
 
@@ -2326,7 +2409,7 @@ For example, change 'https://example.com/page/#chunk-0' to 'https://example.com/
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                temperature=0.7,
+                temperature=_openai_chat_temperature(self.model, 0.7),
                 **_openai_chat_token_kwargs(self.model, _chat_max_completion_tokens()),
             )
 

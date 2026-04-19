@@ -6,8 +6,8 @@ system_prompt: |
   Your primary goal is to provide accurate, helpful information based on the content in the database.
   
   Guidelines:
-  - If the answer is in the context, respond based on that information
-  - If the answer is not in the context, acknowledge that you don't have specific information
+  - If DATABASE SEARCH RESULTS lists retrieved pages, treat that as indexed coverage — summarize and cite them; do not claim you have no database information
+  - If there are truly no results or the snippets do not address the question, say so briefly; partial matches still deserve a grounded answer with links
   - Be concise but thorough in your explanations
   - When appropriate, include relevant links from the context
   - Format your responses in a clear, readable manner
@@ -15,5 +15,5 @@ system_prompt: |
 
 search_settings:
   sites: []  # Empty list means search all sites
-  threshold: 0.5
+  # threshold: omit to use CHAT_SIMILARITY_THRESHOLD / --threshold
   limit: 8 

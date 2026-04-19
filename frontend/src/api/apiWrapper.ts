@@ -16,13 +16,17 @@ const jsonHeaders = (): Record<string, string> => {
   return h;
 };
 
-/** Align with api/routers/chat.py `_is_simple_greeting_message`: word boundaries (not "hi" inside "Hillsboro") + max words. */
-const CHAT_GREETING_MAX_WORDS = 12;
-
+/** Align with chat_intent.is_simple_greeting_message: substantive questions are never greetings (so include_context stays true). */
 export function isSimpleGreetingMessage(message: string): boolean {
   const clean = message.trim().toLowerCase();
   if (!clean) return false;
-  if (clean.split(/\s+/).length > CHAT_GREETING_MAX_WORDS) return false;
+  const words = clean.split(/\s+/);
+  const n = words.length;
+  if (n > 6) return false;
+  if (clean.includes('?') && n > 4) return false;
+  const infoSeeking =
+    /\b(tell me about|can you tell|can you explain|what can you|what (is|are)|which|how (do|does|can|is|about|much|many)|why (is|are|do|does)|when (is|are|do|does)|where (is|are|do))\b/;
+  if (infoSeeking.test(clean)) return false;
   const patterns: RegExp[] = [
     /\bhi\b/,
     /\bhello\b/,
