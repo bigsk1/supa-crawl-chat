@@ -257,7 +257,7 @@ const CrawlPage = () => {
     setUrl('');
     setName('');
     setDescription('');
-    setDepth(2);
+    // Keep crawl type (URL only / URL+links / sitemap) so "Deep Crawl" does not jump back after submit.
     setMaxPages(25);
     setFollowExternalLinks(false);
     setIncludePatterns('');

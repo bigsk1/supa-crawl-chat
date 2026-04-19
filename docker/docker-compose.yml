@@ -18,6 +18,10 @@ services:
     restart: unless-stopped
     environment:
       - PYTHONUNBUFFERED=1
+      # Vite (frontend) proxies /api → api:8001. Uvicorn sees the frontend container IP (e.g. 172.x),
+      # not 127.0.0.1 like local npm+python — so SUPA_API_AUTH / API keys would 401 without trust.
+      # Override via .env if your bridge uses a different range.
+      - SUPA_API_TRUST_CIDRS=${SUPA_API_TRUST_CIDRS:-172.16.0.0/12,10.0.0.0/8}
     healthcheck:
       test:
         [
@@ -66,7 +70,8 @@ services:
       - "3001:3001"
     restart: unless-stopped
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     environment:
       - VITE_API_BASE_URL=http://api:8001
       - NODE_ENV=development

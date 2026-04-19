@@ -22,30 +22,23 @@ const SitesPage = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [debugInfo, setDebugInfo] = useState<string | null>(null);
-  const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [siteToDelete, setSiteToDelete] = useState<Site | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  // Load sites when the component mounts and set up polling
+  // Load sites on mount; poll in the background without swapping the whole page for a spinner.
   useEffect(() => {
-    // Initial load
-    loadSites();
-    
-    // Set up polling every 10 seconds to check for new sites
-    const interval = setInterval(loadSites, 10000);
-    setPollingInterval(interval);
-    
-    // Clean up interval when component unmounts
-    return () => {
-      if (pollingInterval) {
-        clearInterval(pollingInterval);
-      }
-    };
+    void loadSites(false, false);
+    const interval = setInterval(() => {
+      void loadSites(false, true);
+    }, 10000);
+    return () => clearInterval(interval);
   }, []);
 
-  const loadSites = async (bypassCache = false) => {
-    setIsLoading(true);
+  const loadSites = async (bypassCache = false, silent = false) => {
+    if (!silent) {
+      setIsLoading(true);
+    }
     try {
       let sitesData;
       
@@ -89,10 +82,14 @@ const SitesPage = () => {
       }
     } catch (error) {
       console.error('Error loading sites:', error);
-      toast.error('Failed to load sites');
-      setSites([]);
+      if (!silent) {
+        toast.error('Failed to load sites');
+        setSites([]);
+      }
     } finally {
-      setIsLoading(false);
+      if (!silent) {
+        setIsLoading(false);
+      }
     }
   };
 
@@ -161,7 +158,7 @@ const SitesPage = () => {
       await apiService.deleteSite(siteToDelete.id);
       toast.success(`Deleted “${siteToDelete.name || 'site'}”`);
       setSiteToDelete(null);
-      await loadSites(true);
+      await loadSites(true, true);
     } catch (err) {
       console.error(err);
       toast.error('Failed to delete site');
@@ -173,7 +170,7 @@ const SitesPage = () => {
   const manualRefresh = async () => {
     setRefreshing(true);
     try {
-      await loadSites(true); // Pass true to bypass cache
+      await loadSites(true, true); // bypass + silent: button spinner only, no full-page flash
       toast.success('Sites updated', { id: 'sites-list-refresh', duration: 2200 });
     } catch (error) {
       console.error('Error refreshing sites:', error);

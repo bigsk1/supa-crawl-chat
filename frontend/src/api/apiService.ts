@@ -78,10 +78,15 @@ apiClient.interceptors.request.use(async (request) => {
   }
 
   // Never cache live crawl dashboards — polling must see fresh job state
+  const pathOnly = (request.url || '').split('?')[0];
+  const isSitesListGet =
+    request.method === 'get' && (pathOnly === '/sites' || pathOnly === 'sites');
   const skipCache =
     request.method === 'get' &&
     request.url &&
-    (request.url.includes('/crawl/status') || request.url.includes('/crawl/activity'));
+    (request.url.includes('/crawl/status') ||
+      request.url.includes('/crawl/activity') ||
+      isSitesListGet);
 
   // Check cache for GET requests
   if (request.method === 'get' && request.url && !skipCache) {
@@ -120,11 +125,14 @@ apiClient.interceptors.response.use(
     }
 
     // Cache successful GET responses (skip volatile crawl status)
+    const respPath = (response.config.url || '').split('?')[0];
+    const skipStoreSitesList = respPath === '/sites' || respPath === 'sites';
     if (
       response.config.method === 'get' &&
       response.config.url &&
       !response.config.url.includes('/crawl/status') &&
-      !response.config.url.includes('/crawl/activity')
+      !response.config.url.includes('/crawl/activity') &&
+      !skipStoreSitesList
     ) {
       const url = response.config.url;
       const cacheKey = `${url}${JSON.stringify(response.config.params || {})}`;

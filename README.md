@@ -1053,9 +1053,11 @@ docker-compose -f docker/docker-compose.yml up -d
 docker-compose -f docker/docker-compose.yml logs -f
 ```
 
+If the Crawl page or other `/api` calls return **401** in Docker but work with `npm run dev` + Python on the host, the API is seeing the **frontend container’s IP** on the Docker bridge (not `127.0.0.1`). The compose file sets **`SUPA_API_TRUST_CIDRS`** for common private ranges so **`SUPA_API_AUTH` / API keys** still allow browser traffic through the Vite proxy. Override **`SUPA_API_TRUST_CIDRS`** in `.env` if your bridge uses a different range, and include **`172.16.0.0/12`** unless you terminate TLS and use **`SUPA_API_TRUST_FORWARDED`** with a trusted proxy.
+
 This setup includes:
 - API backend on port 8001
-- Frontend UI on port 3000
+- Frontend UI on port 3001
 - Streamlit Explorer on port 8501
 
 ---
