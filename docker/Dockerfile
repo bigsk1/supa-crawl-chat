@@ -10,7 +10,8 @@ RUN apt-get update && apt-get install -y \
 
 # Copy requirements first for better caching
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir -r requirements.txt
 
 # Copy the Supabase Explorer requirements and install them
 COPY supabase_explorer/requirements.txt ./supabase_explorer_requirements.txt

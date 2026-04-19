@@ -1,4 +1,4 @@
-FROM node:18-alpine
+FROM node:22-alpine
 
 WORKDIR /app
 
@@ -15,7 +15,7 @@ RUN npm ci
 COPY frontend/ ./
 
 # Expose port 3000 for the dev server
-EXPOSE 3000
+EXPOSE 3001
 
 # Start the development server
-CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "3000"]
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "3001"]

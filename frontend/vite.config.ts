@@ -3,10 +3,8 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 
 // Determine the API target based on environment
-// In Docker: use host.docker.internal
-// In native development: use localhost
 const API_TARGET = process.env.DOCKER_ENV 
-  ? 'http://host.docker.internal:8001'
+  ? 'http://api:8001'  // Use the service name in Docker
   : 'http://localhost:8001';
 
 console.log(`Vite config using API target: ${API_TARGET}`);
@@ -20,7 +18,7 @@ export default defineConfig({
     },
   },
   server: {
-    port: 3000,
+    port: 3001,
     host: '0.0.0.0', // Allow connections from all network interfaces
     proxy: {
       // Single proxy configuration for all API endpoints

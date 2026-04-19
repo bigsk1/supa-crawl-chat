@@ -1,3 +1,6 @@
+import typography from '@tailwindcss/typography'
+import tailwindcssAnimate from 'tailwindcss-animate'
+
 /** @type {import('tailwindcss').Config} */
 export default {
   content: [
@@ -218,8 +221,5 @@ export default {
       }),
     },
   },
-  plugins: [
-    function() { return require('@tailwindcss/typography') },
-    function() { return require('tailwindcss-animate') },
-  ],
+  plugins: [typography, tailwindcssAnimate],
 } 

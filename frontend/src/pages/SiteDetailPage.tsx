@@ -1097,7 +1097,7 @@ const SiteDetailPage = () => {
                     <PageListItem
                       key={page.id}
                       page={page}
-                      selectedPageId={selectedPage?.id || null}
+                      selectedPageId={null}
                       pageChunks={pageChunks}
                       onPageClick={handlePageClick}
                       isExpanded={isExpanded}

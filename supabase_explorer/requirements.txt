@@ -1,7 +1,9 @@
-sqlalchemy
-psycopg2-binary
-pandas
-python-dotenv
-matplotlib
-seaborn
-streamlit
+# Installed after root requirements.txt in docker/Dockerfile (shares same env).
+# Keep pandas on 2.x to match the main app.
+sqlalchemy>=2.0.36,<3
+psycopg2-binary>=2.9.9
+pandas>=2.2.3,<3
+python-dotenv>=1.0.1
+matplotlib>=3.9.0
+seaborn>=0.13.0
+streamlit>=1.40.0

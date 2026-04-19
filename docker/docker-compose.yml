@@ -1,5 +1,3 @@
-version: '3'
-
 services:
   api:
     build:
@@ -43,14 +41,16 @@ services:
       dockerfile: docker/frontend.Dockerfile
     container_name: supa-chat-frontend
     ports:
-      - "3000:3000"
+      - "3001:3001"
     restart: unless-stopped
     depends_on:
       - api
     environment:
-      - VITE_API_BASE_URL=http://host.docker.internal:8001
+      - VITE_API_BASE_URL=http://api:8001
       - NODE_ENV=development
       - DOCKER_ENV=true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ../frontend:/app
       - /app/node_modules
@@ -58,8 +58,6 @@ services:
       - crawl-network
     security_opt:
       - no-new-privileges
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
 
 networks:
   crawl-network:
