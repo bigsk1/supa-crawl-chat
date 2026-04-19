@@ -42,14 +42,16 @@ A modern React frontend for the Supa Crawl Chat application. This UI provides a 
    yarn
    ```
 
-3. Start the development server:
+3. (Optional) If the backend uses `SCC_API_KEYS` / `API_KEYS`, copy `frontend/.env.example` to `frontend/.env` and set `VITE_API_KEY` to a matching key so the UI can call `/api`.
+
+4. Start the development server:
    ```bash
    npm run dev
    # or
    yarn dev
    ```
 
-4. Open your browser and navigate to http://localhost:3001
+5. Open your browser and navigate to http://localhost:3001
 
 ### Building for Production
 

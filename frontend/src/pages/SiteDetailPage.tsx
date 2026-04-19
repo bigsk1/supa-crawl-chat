@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import PageListItem from '@/components/PageListItem';
 import { createNotification } from '@/utils/notifications';
+import { sanitizeHtml } from '@/lib/sanitize';
 
 // Add this type definition at the top of the file, after imports
 type FilteredPage = {
@@ -30,7 +31,7 @@ type FilteredPage = {
 
 const SiteDetailPage = () => {
   const { siteId } = useParams<{ siteId: string }>();
-  
+
   const [site, setSite] = useState<Site | null>(null);
   const [pages, setPages] = useState<Page[]>([]);
   const [filteredPages, setFilteredPages] = useState<any[]>([]);
@@ -81,13 +82,13 @@ const SiteDetailPage = () => {
       // Find related chunks (other chunks of the same parent page)
       if (selectedPage.is_chunk && selectedPage.parent_id) {
         // If this is a chunk, find other chunks with the same parent_id
-        const chunks = pages.filter(p => 
+        const chunks = pages.filter(p =>
           p.parent_id === selectedPage.parent_id && p.id !== selectedPage.id
         );
         setRelatedChunks(chunks);
       } else if (!selectedPage.is_chunk) {
         // If this is a parent page, find all its chunks
-        const chunks = pages.filter(p => 
+        const chunks = pages.filter(p =>
           p.parent_id === selectedPage.id
         );
         setRelatedChunks(chunks);
@@ -108,38 +109,39 @@ const SiteDetailPage = () => {
   const loadSiteDetails = async (siteId: number) => {
     setIsLoading(true);
     setError(null);
-    
+
     try {
       const siteData = await apiService.getSite(siteId);
       setSite(siteData);
-      
+
       try {
         // First try the direct API call to get pages with date information
         try {
           const response = await axios.get(`/api/sites/${siteId}/pages/`, {
-            params: { 
+            params: {
               include_chunks: true,
               include_dates: true,
+              include_content: false,
               limit: 1000 // Get more pages to ensure we have all of them
             }
           });
-          
+
           console.log('Direct API response for pages:', response.data);
-          
+
           let pagesData = response.data;
           if (pagesData && typeof pagesData === 'object' && 'pages' in pagesData) {
             pagesData = pagesData.pages;
           }
-          
+
           // Store debug info
           setDebugInfo({
             site: siteData,
             pages: pagesData
           });
-          
+
           // Handle both array response and object with pages property
           let pagesArray = Array.isArray(pagesData) ? pagesData : pagesData.pages;
-          
+
           // Process pages to ensure they have all required properties
           const processedPages = pagesArray.map((page: any) => {
             // Log raw date values for debugging
@@ -149,7 +151,7 @@ const SiteDetailPage = () => {
               type_created: typeof page.created_at,
               type_updated: typeof page.updated_at
             });
-            
+
             return {
               ...page,
               // Set is_parent flag for pages that are not chunks
@@ -159,7 +161,7 @@ const SiteDetailPage = () => {
               updated_at: page.updated_at || null
             };
           });
-          
+
           // Log a sample of pages with their date information
           console.log('Processed pages with dates:', processedPages.slice(0, 3).map((p: any) => ({
             id: p.id,
@@ -168,35 +170,35 @@ const SiteDetailPage = () => {
             updated_at: p.updated_at,
             is_chunk: p.is_chunk
           })));
-          
+
           setPages(processedPages);
-          
+
           // Count only parent pages for pagination
           const parentPages = processedPages.filter((p: any) => !p.is_chunk);
           const totalPagesCount = Math.ceil(parentPages.length / pageSize);
           setTotalPages(totalPagesCount > 0 ? totalPagesCount : 1);
-          
+
           // Reset current page to 1 when refreshing
           setCurrentPage(1);
-          
+
           // Show success message
           createNotification('Success', 'Data refreshed successfully', 'success', true);
         } catch (directError) {
           console.error('Error with direct API call:', directError);
-          
+
           // Fall back to the regular API service
           const pagesData = await apiService.getSitePages(siteId, true);
           console.log('Pages data from API service:', pagesData);
-          
+
           // Store debug info
           setDebugInfo({
             site: siteData,
             pages: pagesData
           });
-          
+
           // Handle both array response and object with pages property
           let pagesArray = Array.isArray(pagesData) ? pagesData : pagesData.pages;
-          
+
           // Process pages to ensure they have all required properties
           const processedPages = pagesArray.map((page: any) => ({
             ...page,
@@ -206,7 +208,7 @@ const SiteDetailPage = () => {
             created_at: page.created_at || null,
             updated_at: page.updated_at || null
           }));
-          
+
           console.log('Processed pages with dates:', processedPages.slice(0, 3).map((p: any) => ({
             id: p.id,
             title: p.title,
@@ -214,17 +216,17 @@ const SiteDetailPage = () => {
             updated_at: p.updated_at,
             is_chunk: p.is_chunk
           })));
-          
+
           setPages(processedPages);
-          
+
           // Count only parent pages for pagination
           const parentPages = processedPages.filter((p: any) => !p.is_chunk);
           const totalPagesCount = Math.ceil(parentPages.length / pageSize);
           setTotalPages(totalPagesCount > 0 ? totalPagesCount : 1);
-          
+
           // Reset current page to 1 when refreshing
           setCurrentPage(1);
-          
+
           // Show success message
           createNotification('Success', 'Data refreshed successfully', 'success', true);
         }
@@ -244,21 +246,22 @@ const SiteDetailPage = () => {
 
   const checkApiDirectly = async () => {
     if (!siteId) return;
-    
+
     try {
       // First check the site details
       const siteResponse = await axios.get(`/api/sites/${siteId}`);
       console.log('Direct site API response:', siteResponse.data);
-      
+
       // Then check the pages
       const pagesResponse = await axios.get(`/api/sites/${siteId}/pages/`, {
-        params: { 
+        params: {
           include_chunks: true,
+          include_content: false,
           limit: 1000
         }
       });
       console.log('Direct pages API response:', pagesResponse.data);
-      
+
       // Check the first few pages for date fields
       const pagesData = pagesResponse.data.pages || pagesResponse.data;
       if (Array.isArray(pagesData) && pagesData.length > 0) {
@@ -269,7 +272,7 @@ const SiteDetailPage = () => {
           created_at_type: typeof pagesData[0].created_at,
           updated_at_type: typeof pagesData[0].updated_at
         });
-        
+
         // Try to parse the dates
         if (pagesData[0].created_at) {
           try {
@@ -279,7 +282,7 @@ const SiteDetailPage = () => {
             console.error('Error parsing created_at:', error);
           }
         }
-        
+
         if (pagesData[0].updated_at) {
           try {
             const date = new Date(pagesData[0].updated_at);
@@ -289,7 +292,7 @@ const SiteDetailPage = () => {
           }
         }
       }
-      
+
       createNotification('Success', 'Check console for API response', 'success', true);
     } catch (error) {
       console.error('Error checking API directly:', error);
@@ -299,7 +302,7 @@ const SiteDetailPage = () => {
 
   const applyFilters = () => {
     console.log("Running applyFilters with sort option:", sortOption);
-    
+
     // Create a copy of the pages array to work with
     let filtered = [...pages].map((page: any) => ({
       ...page,
@@ -309,62 +312,62 @@ const SiteDetailPage = () => {
       title: page.title || '',
       is_parent: !page.is_chunk && !page.parent_id
     }));
-    
+
     // Filter out chunk pages - only show parent pages in the main list
     filtered = filtered.filter(page => !page.is_chunk);
-    
+
     // Apply search filter
     if (searchTerm.trim()) {
       const searchLower = searchTerm.toLowerCase();
-      filtered = filtered.filter(page => 
+      filtered = filtered.filter(page =>
         (page.title && page.title.toLowerCase().includes(searchLower)) ||
         (page.url && page.url.toLowerCase().includes(searchLower)) ||
         (page.summary && page.summary.toLowerCase().includes(searchLower)) ||
         (page.content && page.content.toLowerCase().includes(searchLower))
       );
     }
-    
+
     // Apply sorting
     filtered.sort((a, b) => {
       switch (sortOption) {
         case 'title':
           // Case-insensitive alphabetical sort
           return (a.title || '').toLowerCase().localeCompare((b.title || '').toLowerCase());
-        
+
         case 'created':
           // Handle null or undefined dates
           if (!a.created_at && !b.created_at) return 0;
           if (!a.created_at) return 1; // b comes first
           if (!b.created_at) return -1; // a comes first
-          
+
           // Convert to timestamps and compare (newest first)
           const aCreated = new Date(a.created_at).getTime();
           const bCreated = new Date(b.created_at).getTime();
           return bCreated - aCreated;
-        
+
         case 'updated':
           // Handle null or undefined dates
           if (!a.updated_at && !b.updated_at) return 0;
           if (!a.updated_at) return 1; // b comes first
           if (!b.updated_at) return -1; // a comes first
-          
+
           // Convert to timestamps and compare (newest first)
           const aUpdated = new Date(a.updated_at).getTime();
           const bUpdated = new Date(b.updated_at).getTime();
           return bUpdated - aUpdated;
-        
+
         default:
           return 0;
       }
     });
-    
+
     // Update filtered pages
     setFilteredPages(filtered);
-    
+
     // Recalculate total pages based on filtered results
     const newTotalPages = Math.ceil(filtered.length / pageSize);
     setTotalPages(newTotalPages > 0 ? newTotalPages : 1);
-    
+
     // Adjust current page if needed
     if (currentPage > newTotalPages) {
       setCurrentPage(1);
@@ -373,7 +376,7 @@ const SiteDetailPage = () => {
 
   const formatDate = (dateString: string | null | undefined) => {
     if (!dateString) return 'Unknown';
-    
+
     try {
       const date = new Date(dateString);
       return date.toLocaleString();
@@ -385,17 +388,17 @@ const SiteDetailPage = () => {
   // Function to fetch database content from the API
   const fetchDatabaseContent = async (pageId: number) => {
     if (!pageId) return null;
-    
+
     setIsLoadingContent(true);
     try {
       // First try to get content directly from the pages API
       try {
         const pageData = await api.getPageById(pageId);
-        
+
         if (pageData && pageData.content) {
           setDatabaseContent(pageData.content);
           setContentSource('database');
-          
+
           // Update the selected page with additional data only if needed
           if (selectedPage && (!selectedPage.content || selectedPage.content.trim() === '')) {
             setSelectedPage({
@@ -405,7 +408,7 @@ const SiteDetailPage = () => {
               content: pageData.content
             });
           }
-          
+
           // If this is a parent page, fetch its chunks
           if (!pageData.is_chunk) {
             try {
@@ -417,33 +420,33 @@ const SiteDetailPage = () => {
               console.error('Error fetching chunks:', chunkError);
             }
           }
-          
+
           return pageData.content;
         }
       } catch (pageError) {
         console.error('Error fetching from pages API:', pageError);
       }
-      
+
       // If the direct API call didn't work, fall back to the sites API
       if (siteId) {
         try {
           const response = await axios.get(`/api/sites/${siteId}/pages/`, {
             params: { include_chunks: true }
           });
-          
+
           console.log('Sites API response:', response.data);
-          
+
           let pagesData = response.data;
           if (pagesData && typeof pagesData === 'object' && 'pages' in pagesData) {
             pagesData = pagesData.pages;
           }
-          
+
           if (Array.isArray(pagesData)) {
             const pageData = pagesData.find((p: any) => p.id === pageId);
             if (pageData && pageData.content) {
               setDatabaseContent(pageData.content);
               setContentSource('database');
-              
+
               // Update the selected page with additional data if available and needed
               if (selectedPage && (!selectedPage.content || selectedPage.content.trim() === '')) {
                 setSelectedPage({
@@ -453,7 +456,7 @@ const SiteDetailPage = () => {
                   content: pageData.content
                 });
               }
-              
+
               return pageData.content;
             }
           }
@@ -461,7 +464,7 @@ const SiteDetailPage = () => {
           console.error('Error fetching from sites API:', sitesError);
         }
       }
-      
+
       // If we still don't have content, try the search API as a last resort
       try {
         const searchResponse = await axios.get('/api/search/', {
@@ -471,20 +474,20 @@ const SiteDetailPage = () => {
             limit: 1
           }
         });
-        
+
         console.log('Search API response:', searchResponse.data);
-        
+
         let searchResults = searchResponse.data;
         if (searchResponse.data && typeof searchResponse.data === 'object' && 'results' in searchResponse.data) {
           searchResults = searchResponse.data.results;
         }
-        
+
         if (Array.isArray(searchResults) && searchResults.length > 0) {
           const searchResult = searchResults[0];
           if (searchResult.content) {
             setDatabaseContent(searchResult.content);
             setContentSource('database');
-            
+
             // Update the selected page with additional data if available
             if (selectedPage) {
               setSelectedPage({
@@ -492,14 +495,14 @@ const SiteDetailPage = () => {
                 content: searchResult.content
               });
             }
-            
+
             return searchResult.content;
           }
         }
       } catch (searchError) {
         console.error('Error fetching from search API:', searchError);
       }
-      
+
       // If all methods failed, show a message
       setDatabaseContent(null);
       setContentSource('unknown');
@@ -518,22 +521,22 @@ const SiteDetailPage = () => {
   // Function to fetch content directly from the live URL
   const fetchLiveContent = async (url: string) => {
     if (!url) return null;
-    
+
     setIsLoadingContent(true);
     try {
       const corsProxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
       const response = await axios.get(corsProxyUrl);
-      
+
       if (response.data) {
-        const htmlContent = typeof response.data === 'string' 
-          ? response.data 
+        const htmlContent = typeof response.data === 'string'
+          ? response.data
           : JSON.stringify(response.data);
-        
+
         setLiveContent(htmlContent);
         setContentSource('live');
         return htmlContent;
       }
-      
+
       return null;
     } catch (error) {
       console.error('Error fetching live content:', error);
@@ -561,7 +564,7 @@ const SiteDetailPage = () => {
       /^\s*\d+\. .*$/m, // Numbered lists
       /^\s*>\s.*$/m, // Blockquotes
     ];
-    
+
     return markdownPatterns.some(pattern => pattern.test(content));
   };
 
@@ -583,7 +586,7 @@ const SiteDetailPage = () => {
       console.log("Already viewing this page, skipping");
       return;
     }
-    
+
     setSelectedPage(page);
   };
 
@@ -602,17 +605,17 @@ const SiteDetailPage = () => {
   const handleSortChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const newSortOption = e.target.value as 'title' | 'created' | 'updated';
     console.log("Changing sort option to:", newSortOption);
-    
+
     // Show loading indicator
     setIsSorting(true);
-    
+
     // Update sort option
     setSortOption(newSortOption);
-    
+
     // Force immediate re-sorting with a longer timeout to ensure state updates
     setTimeout(() => {
       console.log("Applying filters after sort change with option:", newSortOption);
-      
+
       // Create a copy of the pages array to work with
       let filtered = [...pages].map((page: any) => ({
         ...page,
@@ -622,55 +625,55 @@ const SiteDetailPage = () => {
         title: page.title || '',
         is_parent: !page.is_chunk && !page.parent_id
       }));
-      
+
       // Filter out chunk pages - only show parent pages in the main list
       filtered = filtered.filter(page => !page.is_chunk);
-      
+
       // Apply search filter
       if (searchTerm.trim()) {
         const searchLower = searchTerm.toLowerCase();
-        filtered = filtered.filter(page => 
+        filtered = filtered.filter(page =>
           (page.title && page.title.toLowerCase().includes(searchLower)) ||
           (page.url && page.url.toLowerCase().includes(searchLower)) ||
           (page.summary && page.summary.toLowerCase().includes(searchLower)) ||
           (page.content && page.content.toLowerCase().includes(searchLower))
         );
       }
-      
+
       // Apply sorting
       filtered.sort((a, b) => {
         switch (newSortOption) {
           case 'title':
             // Case-insensitive alphabetical sort
             return (a.title || '').toLowerCase().localeCompare((b.title || '').toLowerCase());
-          
+
           case 'created':
             // Handle null or undefined dates
             if (!a.created_at && !b.created_at) return 0;
             if (!a.created_at) return 1; // b comes first
             if (!b.created_at) return -1; // a comes first
-            
+
             // Convert to timestamps and compare (newest first)
             const aCreated = new Date(a.created_at).getTime();
             const bCreated = new Date(b.created_at).getTime();
             return bCreated - aCreated;
-          
+
           case 'updated':
             // Handle null or undefined dates
             if (!a.updated_at && !b.updated_at) return 0;
             if (!a.updated_at) return 1; // b comes first
             if (!b.updated_at) return -1; // a comes first
-            
+
             // Convert to timestamps and compare (newest first)
             const aUpdated = new Date(a.updated_at).getTime();
             const bUpdated = new Date(b.updated_at).getTime();
             return bUpdated - aUpdated;
-          
+
           default:
             return 0;
         }
       });
-      
+
       // Update filtered pages
       setFilteredPages(filtered);
       setIsSorting(false);
@@ -679,9 +682,9 @@ const SiteDetailPage = () => {
 
   // Add a function to toggle expanded state
   const togglePageExpanded = (pageId: number) => {
-    setExpandedPageIds(prev => 
-      prev.includes(pageId) 
-        ? prev.filter(id => id !== pageId) 
+    setExpandedPageIds(prev =>
+      prev.includes(pageId)
+        ? prev.filter(id => id !== pageId)
         : [...prev, pageId]
     );
   };
@@ -707,10 +710,10 @@ const SiteDetailPage = () => {
           >
             ← Back to Pages
           </button>
-          
+
           <div className="card p-6">
             <h2 className="text-xl font-semibold mb-2">{selectedPage.title || 'Untitled'}</h2>
-            
+
             <div className="flex flex-wrap gap-2 mb-4">
               <a
                 href={selectedPage.url}
@@ -720,14 +723,14 @@ const SiteDetailPage = () => {
               >
                 {selectedPage.url}
               </a>
-              
+
               {selectedPage.is_chunk && (
                 <span className="text-sm bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 px-2 py-1 rounded">
                   Chunk {selectedPage.chunk_index}
                 </span>
               )}
             </div>
-            
+
             <div className="grid grid-cols-2 gap-4 mb-4 text-sm text-gray-600 dark:text-gray-400">
               <div>
                 <span className="font-medium">Created: </span>
@@ -748,14 +751,14 @@ const SiteDetailPage = () => {
                 </div>
               )}
             </div>
-            
+
             {selectedPage.summary && (
               <div className="mb-4">
                 <h3 className="text-lg font-medium mb-2">Summary</h3>
                 <p className="bg-gray-50 dark:bg-gray-800 p-3 rounded">{selectedPage.summary}</p>
               </div>
             )}
-            
+
             {/* Related chunks section */}
             {relatedChunks.length > 0 && (
               <div className="mb-4">
@@ -782,7 +785,7 @@ const SiteDetailPage = () => {
                 </div>
               </div>
             )}
-            
+
             <div>
               <div className="flex flex-col space-y-2 mb-4">
                 <div className="flex justify-between items-center">
@@ -795,7 +798,7 @@ const SiteDetailPage = () => {
                     )}
                   </div>
                 </div>
-                
+
                 <div className="flex flex-wrap gap-2">
                   <div className="flex rounded-md shadow-sm" role="group">
                     <button
@@ -831,7 +834,7 @@ const SiteDetailPage = () => {
                       Live URL Content
                     </button>
                   </div>
-                  
+
                   <div className="flex rounded-md shadow-sm" role="group">
                     <button
                       type="button"
@@ -858,7 +861,7 @@ const SiteDetailPage = () => {
                   </div>
                 </div>
               </div>
-              
+
               {isLoadingContent ? (
                 <div className="flex justify-center items-center h-32">
                   <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-blue-500"></div>
@@ -873,7 +876,7 @@ const SiteDetailPage = () => {
                         ) : (
                           <div className="prose dark:prose-invert max-w-none">
                             {detectContentType(databaseContent) === 'html' ? (
-                              <div dangerouslySetInnerHTML={{ __html: databaseContent }} />
+                              <div dangerouslySetInnerHTML={{ __html: sanitizeHtml(databaseContent) }} />
                             ) : (
                               <ReactMarkdown>
                                 {databaseContent}
@@ -884,7 +887,7 @@ const SiteDetailPage = () => {
                       ) : (
                         <div className="flex flex-col items-center justify-center py-4">
                           <p className="text-gray-500 dark:text-gray-400 mb-2">No database content available</p>
-                          <button 
+                          <button
                             onClick={() => selectedPage.id && fetchDatabaseContent(selectedPage.id)}
                             className="btn-secondary text-xs py-1 px-3"
                           >
@@ -901,7 +904,7 @@ const SiteDetailPage = () => {
                         ) : (
                           <div className="prose dark:prose-invert max-w-none">
                             {detectContentType(liveContent) === 'html' ? (
-                              <div dangerouslySetInnerHTML={{ __html: liveContent }} />
+                              <div dangerouslySetInnerHTML={{ __html: sanitizeHtml(liveContent) }} />
                             ) : (
                               <ReactMarkdown>
                                 {liveContent}
@@ -912,7 +915,7 @@ const SiteDetailPage = () => {
                       ) : (
                         <div className="flex flex-col items-center justify-center py-4">
                           <p className="text-gray-500 dark:text-gray-400 mb-2">No live content available</p>
-                          <button 
+                          <button
                             onClick={() => selectedPage.url && fetchLiveContent(selectedPage.url)}
                             className="btn-secondary text-xs py-1 px-3"
                           >
@@ -925,7 +928,7 @@ const SiteDetailPage = () => {
                 </>
               )}
             </div>
-            
+
             {/* Debug information section */}
             <div className="mt-6 border-t border-gray-200 dark:border-gray-700 pt-4">
               <details className="text-sm">
@@ -957,7 +960,7 @@ const SiteDetailPage = () => {
                 {site.url}
               </a>
             </p>
-            
+
             {site.description && (
               <div className="mb-4">
                 <h3 className="text-lg font-medium mb-2">Description</h3>
@@ -969,14 +972,14 @@ const SiteDetailPage = () => {
                 )}
               </div>
             )}
-            
+
             <div className="grid grid-cols-1 gap-4 text-sm text-gray-600 dark:text-gray-400">
               <div>
                 <span className="font-medium">Created: </span>
                 {formatDate(site.created_at)}
               </div>
             </div>
-            
+
             <div className="mt-4 flex gap-2">
               <button
                 onClick={checkApiDirectly}
@@ -988,7 +991,7 @@ const SiteDetailPage = () => {
                 </svg>
                 Debug API Data
               </button>
-              
+
               <button
                 onClick={() => siteId && loadSiteDetails(parseInt(siteId))}
                 className="text-xs bg-blue-100 dark:bg-blue-800 text-blue-700 dark:text-blue-300 hover:bg-blue-200 dark:hover:bg-blue-700 px-3 py-1 rounded-md flex items-center"
@@ -999,7 +1002,7 @@ const SiteDetailPage = () => {
                 </svg>
                 Refresh Data
               </button>
-              
+
               <button
                 onClick={() => setShowDebug(!showDebug)}
                 className="text-xs bg-purple-100 dark:bg-purple-800 text-purple-700 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-700 px-3 py-1 rounded-md flex items-center"
@@ -1012,7 +1015,7 @@ const SiteDetailPage = () => {
               </button>
             </div>
           </div>
-          
+
           <div className="flex justify-between items-center mb-4">
             <div className="flex items-center">
               <h2 className="text-xl font-semibold">
@@ -1029,7 +1032,7 @@ const SiteDetailPage = () => {
               </button>
             </div>
           </div>
-          
+
           <div className="flex items-center gap-2 mb-4">
             <div className="flex items-center">
               <span className="text-sm text-gray-600 dark:text-gray-400 mr-2">Sort by:</span>
@@ -1065,7 +1068,7 @@ const SiteDetailPage = () => {
               />
             </div>
           </div>
-          
+
           {filteredPages.length === 0 ? (
             <div className="text-center py-8 text-gray-500 dark:text-gray-400">
               <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 mx-auto mb-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1074,7 +1077,7 @@ const SiteDetailPage = () => {
               <p className="text-lg font-medium">No pages found</p>
               <p className="mt-1">Try adjusting your search or filters</p>
               {searchTerm && (
-                <button 
+                <button
                   onClick={() => setSearchTerm('')}
                   className="mt-4 px-4 py-2 bg-blue-100 dark:bg-blue-800 text-blue-700 dark:text-blue-300 rounded-md hover:bg-blue-200 dark:hover:bg-blue-700"
                 >
@@ -1088,11 +1091,11 @@ const SiteDetailPage = () => {
                 .slice((currentPage - 1) * pageSize, currentPage * pageSize)
                 .map((page: any, index: number) => {
                   if (!page || !page.id) return null;
-                  
+
                   // Get chunks for this page
                   const pageChunks = pages.filter(p => p.parent_id === page.id);
                   const isExpanded = isPageExpanded(page.id);
-                  
+
                   return (
                     <PageListItem
                       key={page.id}
@@ -1108,13 +1111,13 @@ const SiteDetailPage = () => {
                 })}
             </div>
           )}
-          
+
           {filteredPages.length > 0 && (
             <div className="mt-4 text-sm text-gray-600 dark:text-gray-400 text-center">
               Showing {Math.min(filteredPages.length, (currentPage - 1) * pageSize + 1)} - {Math.min(filteredPages.length, currentPage * pageSize)} of {filteredPages.length} pages
             </div>
           )}
-          
+
           {totalPages > 1 && (
             <div className="flex flex-col sm:flex-row justify-between items-center mt-6 gap-4">
               <div className="flex items-center space-x-2">
@@ -1140,7 +1143,7 @@ const SiteDetailPage = () => {
                   <option value="50">50 per page</option>
                 </select>
               </div>
-              
+
               <nav className="flex items-center space-x-2">
                 <button
                   onClick={() => handlePageChange(1)}
@@ -1162,11 +1165,11 @@ const SiteDetailPage = () => {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
                   </svg>
                 </button>
-                
+
                 <span className="text-sm text-gray-600 dark:text-gray-400">
                   Page {currentPage} of {totalPages}
                 </span>
-                
+
                 <button
                   onClick={() => handlePageChange(Math.min(totalPages, currentPage + 1))}
                   disabled={currentPage === totalPages}
@@ -1200,4 +1203,4 @@ const SiteDetailPage = () => {
   );
 };
 
-export default SiteDetailPage; 
+export default SiteDetailPage;

@@ -24,6 +24,8 @@ class Page(BaseModel):
     url: str
     title: Optional[str] = None
     content: Optional[str] = None
+    content_length: Optional[int] = None
+    content_truncated: Optional[bool] = None
     summary: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
     is_chunk: bool = False
@@ -54,8 +56,24 @@ class ChunkList(BaseModel):
     count: int
     parent_id: int
 
+@router.post("/maintenance/deduplicate", response_model=Dict[str, int])
+async def deduplicate_chunks(db_client: SupabaseClient = Depends(get_db_client)):
+    """
+    Remove exact duplicate chunks and disable parent-page embeddings where chunks exist.
+    """
+    try:
+        return db_client.cleanup_duplicate_chunks()
+    except Exception as e:
+        print(f"Error in deduplicate_chunks: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
 @router.get("/{page_id}", response_model=Optional[Page])
-async def get_page_by_id(page_id: int, db_client: SupabaseClient = Depends(get_db_client)):
+async def get_page_by_id(
+    page_id: int,
+    content_chars: int = Query(20000, ge=0, le=200000, description="Maximum content characters to return"),
+    full: bool = Query(False, description="Return full page content"),
+    db_client: SupabaseClient = Depends(get_db_client),
+):
     """
     Get a page by ID.
     """
@@ -65,6 +83,14 @@ async def get_page_by_id(page_id: int, db_client: SupabaseClient = Depends(get_d
         print(f"Page result: {page}")
         if not page:
             raise HTTPException(status_code=404, detail=f"Page with ID {page_id} not found")
+        content = page.get("content")
+        if content is not None:
+            page["content_length"] = len(content)
+            if not full and len(content) > content_chars:
+                page["content"] = content[:content_chars]
+                page["content_truncated"] = True
+            else:
+                page["content_truncated"] = False
         return page
     except Exception as e:
         print(f"Error in get_page_by_id: {e}")

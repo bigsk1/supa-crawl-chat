@@ -40,9 +40,9 @@ Seamlessly crawl websites, transform content into vector embeddings, and enable 
     - **Full-Stack**: End-to-end solution with App + Crawl4AI + Supabase for maximum autonomy
 
 - 🌐 **Comprehensive API Ecosystem**
-  - RESTful API with comprehensive documentation for seamless integration
-  - Webhook support for event-driven architectures
-  - Comprehensive access management and multi-factor authentication for enhanced security
+  - RESTful API with interactive OpenAPI docs (`/docs`)
+  - Optional API key protection for all `/api` routes when `SCC_API_KEYS` or `API_KEYS` is set
+  - Crawl URL validation (SSRF mitigation) with optional private-network overrides for trusted deployments
 
 
 ## Prerequisites
@@ -160,10 +160,10 @@ To run the backend API and the frontend UI, follow these steps:
 3. **Access the Web UI**:
    Open your web browser and go to:
    ```
-   http://localhost:3000/
+   http://localhost:3001/
    ```
 
-This will start the backend API on port 8001 and the frontend UI on port 3000.
+This will start the backend API on port 8001 and the frontend dev server on port 3001 (see `frontend/vite.config.ts`).
 
  If you need a complete solution - crawl4ai with or without a local Supabase all in Docker see [Docker Deployment](#docker-deployment) section of the README
 
@@ -281,16 +281,14 @@ This approach ensures that chunks are not only sized appropriately for LLMs but 
 <details>
 <summary>Click to expand chunking configuration</summary>
 
-You can adjust the chunking parameters in the code:
+Chunk size and overlap are configured via environment variables (see `.env.example`):
 
-```python
-# In crawler.py, enhance_pages method
-enhanced_pages = asyncio.run(self.enhance_pages(pages, max_tokens_per_chunk=4000))
+```env
+CHUNK_MAX_TOKENS=900
+CHUNK_OVERLAP_TOKENS=120
 ```
 
-The default settings are:
-- `max_tokens_per_chunk`: 4,000 tokens (half of the 8,192 token limit for safety)
-- `overlap_tokens`: 200 tokens (overlap between chunks to maintain context)
+These feed the crawler’s chunking pipeline so you can tune token usage and overlap without editing code. Values should stay within the embedding model’s context limit (for example 8,192 tokens for `text-embedding-3-small`).
 </details>
 
 ## Testing the Setup
@@ -306,6 +304,14 @@ Before using the crawler, you can test your setup:
    ```
    python tests/test_crawl_api.py
    ```
+
+3. Run the Python test suite (install dev dependencies first):
+   ```bash
+   pip install -r requirements-dev.txt
+   pytest
+   ```
+
+   This includes tests for crawl API behavior, URL validation (`security_utils`), and chunking helpers.
 
 ## Usage
 
@@ -815,7 +821,8 @@ You can also use the crawler programmatically in your own Python code. See `test
 - `requirements.txt`: List of dependencies for the backend
 - `.env.example`: Example environment file for the backend
 - `api/`: Directory containing the FastAPI implementation
-  - `main.py`: FastAPI application entry point
+  - `main.py`: FastAPI application entry point (optional API key dependency, CORS, auto-refresh hooks)
+  - `auth.py`: Optional `SCC_API_KEYS` / `API_KEYS` validation
   - `routers/`: Directory containing API route definitions
     - `crawl.py`: Endpoints for crawling websites and sitemaps
     - `search.py`: Endpoints for searching crawled content
@@ -823,6 +830,8 @@ You can also use the crawler programmatically in your own Python code. See `test
     - `chat.py`: Endpoints for interacting with the chat interface
     - `pages.py`: Endpoints for managing and retrieving page information
   - `README.md`: Comprehensive API documentation
+- `security_utils.py`: URL validation for crawl/fetch targets and shared env parsing helpers
+- `requirements-dev.txt`: Dev dependencies (e.g. `pytest`) layered on `requirements.txt`
 - `docker/`: Directory containing Docker-related files
   - `Dockerfile`: Docker image definition for the backend application
   - `frontend.Dockerfile`: Docker image definition for the frontend application
@@ -850,6 +859,8 @@ You can also use the crawler programmatically in your own Python code. See `test
   - `example.py`: Example script demonstrating programmatic usage
   - `test_db_connection.py`: Script to test the database connection
   - `test_crawl_api.py`: Script to test the Crawl4AI API
+  - `test_security_utils.py`, `test_crawler_chunking.py`: Pytest coverage for URL rules and chunking
+  - `smoke_api.py`: Optional smoke checks against a running API
   - `reset_database.py`: Script to delete tables or reset the database
 
 ### Frontend
@@ -1193,7 +1204,18 @@ For more detailed instructions, see the [Docker README](docker/full-stack/README
 
 ## API
 
-The project includes a FastAPI-based REST API that allows you to integrate the Supa-Crawl-Chat functionality with other applications or build custom frontends. The API provides endpoints for searching, crawling, managing sites, and chatting.
+The project includes a FastAPI-based REST API that allows you to integrate the Supa-Crawl-Chat functionality with other applications or build custom frontends. The API provides endpoints for searching, crawling, managing sites, pages, and chatting.
+
+### API security (optional)
+
+When `SCC_API_KEYS` or `API_KEYS` is set to a comma-separated list of secrets, **every** `/api` route requires one of:
+
+- Header `x-api-key: <key>`, or  
+- Header `Authorization: Bearer <key>`
+
+For the React UI, set `VITE_API_KEY` in `frontend/.env` to the same value (see `frontend/.env.example`). For browser clients, set `API_CORS_ORIGINS` to your frontend origins (comma-separated); if unset, the API uses permissive CORS for local development.
+
+Crawl targets are validated to reduce SSRF risk: only public `http`/`https` URLs are allowed unless you set `ALLOW_PRIVATE_CRAWL_URLS` or list hosts in `CRAWL_ALLOWED_HOSTS`. See `.env.example` for details.
 
 ### Running the API
 
@@ -1303,7 +1325,7 @@ The API provides the following endpoints:
 Here's an example of how to use the API with curl:
 
 ```bash
-# Search for content
+# Search for content (add -H "x-api-key: YOUR_KEY" if SCC_API_KEYS/API_KEYS is configured)
 curl -X GET "http://localhost:8001/api/search?query=pydantic&threshold=0.3&limit=5" -H "accept: application/json"
 
 # Start a chat session

@@ -2,6 +2,11 @@ import axios from 'axios';
 
 // Base URL for API requests - ensure trailing slash
 const API_BASE_URL = '/api';
+const API_KEY = import.meta.env.VITE_API_KEY as string | undefined;
+
+if (API_KEY) {
+  axios.defaults.headers.common['x-api-key'] = API_KEY;
+}
 
 // Simple cache for GET requests
 interface CacheEntry {
@@ -24,6 +29,7 @@ const apiClient = axios.create({
   baseURL: API_BASE_URL,
   headers: {
     'Content-Type': 'application/json',
+    ...(API_KEY ? { 'x-api-key': API_KEY } : {}),
   },
 });
 
@@ -34,10 +40,10 @@ const IMPORTANT_ENDPOINTS = ['/chat/', '/crawl/'];
 // Add request interceptor with caching for GET requests
 apiClient.interceptors.request.use(async (request) => {
   // Only log POST/PUT/DELETE requests or important endpoints
-  const isImportantEndpoint = IMPORTANT_ENDPOINTS.some(endpoint => 
+  const isImportantEndpoint = IMPORTANT_ENDPOINTS.some(endpoint =>
     request.url?.includes(endpoint)
   );
-  
+
   if (request.method !== 'get' || isImportantEndpoint) {
     console.log(`API Request: ${request.method?.toUpperCase()} ${request.url}`);
   }
@@ -46,11 +52,11 @@ apiClient.interceptors.request.use(async (request) => {
   if (request.method === 'get' && request.url) {
     const cacheKey = `${request.url}${JSON.stringify(request.params || {})}`;
     const cachedResponse = apiCache[cacheKey];
-    
+
     if (cachedResponse && Date.now() < cachedResponse.expiry) {
       // Return cached response
       console.log(`Using cached response for ${request.url}`);
-      
+
       // Create a new Promise that resolves with the cached data
       return Promise.resolve({
         ...request,
@@ -67,7 +73,7 @@ apiClient.interceptors.request.use(async (request) => {
       });
     }
   }
-  
+
   return request;
 });
 
@@ -75,19 +81,19 @@ apiClient.interceptors.request.use(async (request) => {
 apiClient.interceptors.response.use(
   response => {
     // Only log responses for non-GET requests or important endpoints
-    const isImportantEndpoint = IMPORTANT_ENDPOINTS.some(endpoint => 
+    const isImportantEndpoint = IMPORTANT_ENDPOINTS.some(endpoint =>
       response.config.url?.includes(endpoint)
     );
-    
+
     if (response.config.method !== 'get' || isImportantEndpoint) {
       console.log(`API Response: ${response.status} ${response.config.url}`);
     }
-    
+
     // Cache successful GET responses
     if (response.config.method === 'get' && response.config.url) {
       const url = response.config.url;
       const cacheKey = `${url}${JSON.stringify(response.config.params || {})}`;
-      
+
       // Determine cache expiry based on endpoint
       let expiryTime = CACHE_EXPIRY.default;
       if (url.includes('/sites/')) {
@@ -95,7 +101,7 @@ apiClient.interceptors.response.use(
       } else if (url.includes('/profiles/')) {
         expiryTime = CACHE_EXPIRY.profiles;
       }
-      
+
       // Store in cache
       apiCache[cacheKey] = {
         data: response.data,
@@ -103,12 +109,12 @@ apiClient.interceptors.response.use(
         expiry: Date.now() + expiryTime
       };
     }
-    
+
     return response;
   },
   error => {
-    console.error('API Error:', 
-      error.response?.status || 'Network Error', 
+    console.error('API Error:',
+      error.response?.status || 'Network Error',
       error.config?.url || 'Unknown URL',
       error.response?.data || error.message
     );
@@ -133,6 +139,8 @@ export interface Page {
   url: string;
   title?: string;
   content?: string;
+  content_length?: number;
+  content_truncated?: boolean;
   summary?: string;
   metadata?: any;
   is_chunk?: boolean;
@@ -150,6 +158,8 @@ export interface SearchResult {
   url: string;
   title: string;
   content?: string;
+  content_length?: number;
+  content_truncated?: boolean;
   snippet?: string;
   summary?: string;
   similarity: number;
@@ -160,6 +170,7 @@ export interface SearchResult {
   parent_title?: string | null;
   site_id: number;
   site_name?: string;
+  metadata?: any;
 }
 
 export interface SearchResponse {
@@ -185,6 +196,7 @@ export interface CrawlResponse {
   url: string;
   message: string;
   status: string;
+  job_id?: number;
   next_steps: {
     check_status: string;
     view_pages: string;
@@ -278,7 +290,7 @@ export const apiService = {
     try {
       const response = await apiClient.get('/sites');
       console.log('Raw sites response:', response.data);
-      
+
       // Handle different response formats
       if (Array.isArray(response.data)) {
         return response.data;
@@ -294,7 +306,7 @@ export const apiService = {
           return possibleSites as Site[];
         }
       }
-      
+
       // If we can't determine the format, return an empty array
       console.error('Unexpected sites response format:', response.data);
       return [];
@@ -319,9 +331,9 @@ export const apiService = {
       const response = await apiClient.get(`/sites/${siteId}/pages`, {
         params: { include_chunks: includeChunks }
       });
-      
+
       console.log('Raw site pages response:', response.data);
-      
+
       // Return the data as is, let the component handle the format
       return response.data;
     } catch (error) {
@@ -332,7 +344,9 @@ export const apiService = {
 
   getPageById: async (pageId: number): Promise<Page> => {
     try {
-      const response = await apiClient.get(`/pages/${pageId}`);
+      const response = await apiClient.get(`/pages/${pageId}`, {
+        params: { full: true }
+      });
       console.log('Page by ID response:', response.data);
       return response.data;
     } catch (error) {
@@ -345,7 +359,7 @@ export const apiService = {
     try {
       const response = await apiClient.get(`/pages/${pageId}/chunks`);
       console.log('Page chunks response:', response.data);
-      
+
       // Handle different response formats
       if (Array.isArray(response.data)) {
         return response.data;
@@ -365,7 +379,7 @@ export const apiService = {
   startCrawl: async (crawlRequest: any): Promise<CrawlStatus> => {
     try {
       const response = await apiClient.post('/crawl/', crawlRequest);
-      
+
       // Check if the response contains a site_id
       if (response.data && response.data.site_id) {
         // Return the crawl status
@@ -386,14 +400,14 @@ export const apiService = {
         console.log('No siteId provided, fetching all sites instead');
         return apiService.getSites() as unknown as CrawlStatus[];
       }
-      
+
       // Use the correct endpoint format with siteId
       const endpoint = `/crawl/status/${siteId}/`;
-      
+
       console.log('Fetching crawl status from:', endpoint);
       const response = await apiClient.get(endpoint);
       console.log('Crawl status response:', response.data);
-      
+
       return response.data;
     } catch (error) {
       console.error('Error fetching crawl status:', error);
@@ -403,9 +417,9 @@ export const apiService = {
 
   // Search methods
   search: async (
-    query: string, 
-    siteId?: number, 
-    threshold: number = 0.3, 
+    query: string,
+    siteId?: number,
+    threshold: number = 0.3,
     limit: number = 10,
     textOnly: boolean = false
   ): Promise<SearchResult[]> => {
@@ -419,7 +433,7 @@ export const apiService = {
           text_only: textOnly
         }
       });
-      
+
       // Handle both array response and SearchResponse object
       if (Array.isArray(response.data)) {
         return response.data;
@@ -438,32 +452,32 @@ export const apiService = {
   // Chat methods
   sendMessage: async (message: string, profile: string, sessionId?: string, userName?: string): Promise<ChatMessage> => {
     try {
-      const payload: any = { 
-        message, 
+      const payload: any = {
+        message,
         profile
       };
-      
+
       // Use the user's name as the user_id if provided, otherwise use the profile name
       if (userName) {
         payload.user_id = userName;
       }
-      
+
       // Add session_id if provided
       if (sessionId) {
         payload.session_id = sessionId;
       }
-      
+
       // Add query parameters to always include context and search settings
       const params = {
         include_context: true,  // Always include search context
         result_limit: 10,       // Reasonable default
         similarity_threshold: 0.5 // Reasonable default
       };
-      
+
       const response = await apiClient.post('/chat/', payload, { params });
-      
+
       console.log('Chat response:', response.data);
-      
+
       // Handle different response formats
       if (response.data && typeof response.data === 'object') {
         if (response.data.response) {
@@ -474,12 +488,12 @@ export const apiService = {
             content: response.data.response,
             created_at: new Date().toISOString()
           };
-          
+
           // If context was included, add it to the message
           if (response.data.context) {
             assistantMessage.context = response.data.context;
           }
-          
+
           return assistantMessage;
         } else if (response.data.content) {
           // Message format: { role: string, content: string, ... }
@@ -489,23 +503,23 @@ export const apiService = {
             content: response.data.content,
             created_at: new Date().toISOString()
           };
-          
+
           // If context was included, add it to the message
           if (response.data.context) {
             message.context = response.data.context;
           }
-          
+
           return message;
         }
       }
-      
+
       // Fallback for unexpected formats
       console.error('Unexpected chat response format:', response.data);
       return {
         id: Date.now().toString(),
         role: 'assistant',
-        content: typeof response.data === 'string' 
-          ? response.data 
+        content: typeof response.data === 'string'
+          ? response.data
           : 'Received an unexpected response format. Please try again.',
         created_at: new Date().toISOString()
       };
@@ -518,15 +532,15 @@ export const apiService = {
   getProfiles: async (sessionId?: string): Promise<Profile[]> => {
     try {
       const params: any = {};
-      
+
       // Add session_id if provided
       if (sessionId) {
         params.session_id = sessionId;
       }
-      
+
       // Use URL without trailing slash
       const response = await apiClient.get('/chat/profiles', { params });
-      
+
       // Handle both array response and ProfilesResponse object
       if (Array.isArray(response.data)) {
         return response.data;
@@ -546,20 +560,20 @@ export const apiService = {
   setProfile: async (profileId: string, sessionId?: string, userName?: string): Promise<void> => {
     try {
       const params: any = {};
-      
+
       // Use the user's name as the user_id if provided
       if (userName) {
         params.user_id = userName;
       }
-      
+
       // Add session_id if provided
       if (sessionId) {
         params.session_id = sessionId;
       }
-      
+
       // Use URL without trailing slash
       await apiClient.post(`/chat/profiles/${profileId}`, null, { params });
-      
+
       // Clear any cached chat history to ensure fresh data with the new profile
       if (sessionId) {
         const cacheKey = `/chat/history/${JSON.stringify({ session_id: sessionId })}`;
@@ -580,9 +594,9 @@ export const apiService = {
       const response = await apiClient.get('/chat/history', {
         params: { session_id: sessionId }
       });
-      
+
       let messages: ChatMessage[] = [];
-      
+
       // Handle different response formats
       if (Array.isArray(response.data)) {
         // Format: ChatMessage[]
@@ -597,7 +611,7 @@ export const apiService = {
           messages = possibleMessages as ChatMessage[];
         }
       }
-      
+
       // Don't filter out system messages that contain search context
       return messages;
     } catch (error) {
@@ -612,7 +626,7 @@ export const apiService = {
       await apiClient.delete('/chat/history', {
         params: { session_id: sessionId }
       });
-      
+
       // Clear the cache for this session's chat history
       // This prevents old messages from reappearing after clearing
       const cacheKey = `/chat/history/${JSON.stringify({ session_id: sessionId })}`;
@@ -636,7 +650,7 @@ export const apiService = {
           active_only: activeOnly
         }
       });
-      
+
       // Handle different response formats
       if (Array.isArray(response.data)) {
         return response.data;
@@ -653,10 +667,10 @@ export const apiService = {
   },
 
   addUserPreference: async (
-    userId: string, 
-    preferenceType: string, 
-    preferenceValue: string, 
-    context?: string, 
+    userId: string,
+    preferenceType: string,
+    preferenceValue: string,
+    context?: string,
     confidence: number = 0.9,
     sessionId?: string
   ): Promise<UserPreference | null> => {
@@ -670,7 +684,7 @@ export const apiService = {
       }, {
         params: { user_id: userId }
       });
-      
+
       return response.data;
     } catch (error) {
       console.error('Error adding user preference:', error);
@@ -725,4 +739,4 @@ export const apiService = {
       return false;
     }
   }
-}; 
+};

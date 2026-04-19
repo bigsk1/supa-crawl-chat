@@ -18,10 +18,10 @@ class Site(BaseModel):
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     page_count: Optional[int] = None
-    
+
     class Config:
         arbitrary_types_allowed = True
-        
+
     @classmethod
     def from_dict(cls, site_dict):
         """Create a Site from a dictionary, converting datetime to string if needed."""
@@ -39,18 +39,24 @@ class SiteList(BaseModel):
 
 class Page(BaseModel):
     id: int
+    site_id: Optional[int] = None
     url: str
     title: Optional[str] = None
+    content: Optional[str] = None
+    content_length: Optional[int] = None
+    content_truncated: Optional[bool] = None
     summary: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
     is_chunk: bool = False
     chunk_index: Optional[int] = None
     parent_id: Optional[int] = None
+    parent_title: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
-    
+
     class Config:
         arbitrary_types_allowed = True
-        
+
     @classmethod
     def from_dict(cls, page_dict):
         """Create a Page from a dictionary, converting datetime to string if needed."""
@@ -74,13 +80,13 @@ async def list_sites(
 ):
     """
     List all crawled sites.
-    
+
     - **include_chunks**: Whether to include chunks in the page count
     """
     try:
         db_client = SupabaseClient()
         sites = db_client.get_all_sites()
-        
+
         # Get page count for each site
         site_list = []
         for site in sites:
@@ -88,7 +94,7 @@ async def list_sites(
             site_data = site.copy()
             site_data["page_count"] = page_count
             site_list.append(Site.from_dict(site_data))
-        
+
         return SiteList(
             sites=site_list,
             count=len(site_list)
@@ -106,23 +112,23 @@ async def get_site(
 ):
     """
     Get a site by ID.
-    
+
     - **site_id**: The ID of the site
     - **include_chunks**: Whether to include chunks in the page count
     """
     try:
         db_client = SupabaseClient()
         site = db_client.get_site_by_id(site_id)
-        
+
         if not site:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Site with ID {site_id} not found"
             )
-        
+
         # Get page count
         page_count = db_client.get_page_count_by_site_id(site_id, include_chunks=include_chunks)
-        
+
         site_data = site.copy()
         site_data["page_count"] = page_count
         return Site.from_dict(site_data)
@@ -138,11 +144,14 @@ async def get_site(
 async def get_site_pages(
     site_id: int = Path(..., description="The ID of the site"),
     include_chunks: bool = Query(False, description="Include chunks in the results"),
-    limit: int = Query(100, description="Maximum number of pages to return")
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of pages to return"),
+    offset: int = Query(0, ge=0, description="Number of pages to skip"),
+    include_content: bool = Query(False, description="Include page content in the listing"),
+    content_chars: int = Query(1000, ge=0, le=20000, description="Maximum content characters per page when include_content=true")
 ):
     """
     Get pages for a specific site.
-    
+
     - **site_id**: The ID of the site
     - **include_chunks**: Whether to include chunks in the results
     - **limit**: Maximum number of pages to return
@@ -150,8 +159,15 @@ async def get_site_pages(
     try:
         # Get pages
         crawler = WebCrawler()
-        pages = crawler.get_site_pages(site_id, limit=limit, include_chunks=include_chunks)
-        
+        pages = crawler.get_site_pages(
+            site_id,
+            limit=limit,
+            include_chunks=include_chunks,
+            offset=offset,
+            include_content=include_content,
+            content_chars=content_chars,
+        )
+
         # Get site name
         db_client = SupabaseClient()
         site = db_client.get_site_by_id(site_id)
@@ -160,12 +176,12 @@ async def get_site_pages(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Site with ID {site_id} not found"
             )
-        
+
         # Convert to Page model
         page_list = []
         for page in pages:
             page_list.append(Page.from_dict(page))
-        
+
         return PageList(
             pages=page_list,
             count=len(page_list),
@@ -178,4 +194,4 @@ async def get_site_pages(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error getting site pages: {str(e)}"
-        ) 
+        )

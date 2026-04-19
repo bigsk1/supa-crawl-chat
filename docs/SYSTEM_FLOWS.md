@@ -36,6 +36,11 @@ This document provides a detailed explanation of all the components, flows, and 
 - Offers an interactive chat experience
 - Manages site and page administration
 
+### 6. Security boundaries (API and crawl targets)
+
+- **Optional FastAPI authentication:** When `SCC_API_KEYS` or `API_KEYS` is set, clients must send a key on every `/api` request (`x-api-key` or `Authorization: Bearer`). The React app uses `VITE_API_KEY` for the same value. CORS is tightened for production by setting `API_CORS_ORIGINS` to allowed browser origins.
+- **Crawl URL validation:** User-supplied crawl and fetch URLs are checked in `security_utils.validate_fetch_url` to limit SSRF-style abuse (private IPs, non-http(s) schemes, credentials in URLs, etc.). Trusted internal crawls can use `ALLOW_PRIVATE_CRAWL_URLS` or host allowlists via `CRAWL_ALLOWED_HOSTS` (see `.env.example`).
+
 ## Frontend Architecture and Components
 
 The frontend is built using React with TypeScript, providing a modern, responsive user interface for interacting with the Crawl4AI system. This section details the architecture, components, and data flows within the frontend.
@@ -108,7 +113,7 @@ The frontend uses a combination of state management approaches:
 The frontend communicates with the backend through a structured API layer:
 
 1. **apiService.ts**: Core service for making HTTP requests
-   - Handles authentication
+   - Attaches the optional `x-api-key` header when `VITE_API_KEY` is set
    - Manages request/response formatting
    - Implements error handling
    - Provides logging and debugging

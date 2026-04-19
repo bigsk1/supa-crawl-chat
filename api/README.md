@@ -44,7 +44,14 @@ http://localhost:8001/docs
 
 ## Authentication
 
-Currently, the API does not require authentication. However, the Crawl4AI service used by the API requires an API token, which should be configured in your `.env` file.
+**Supa-Crawl-Chat API keys (optional):** If `SCC_API_KEYS` or `API_KEYS` is set in the environment to a comma-separated list of secrets, **all** routes under `/api` require authentication. Send any one of the configured keys using either:
+
+- `x-api-key: <key>`
+- `Authorization: Bearer <key>`
+
+If neither variable is set, the API accepts requests without a key (suitable for local development). For browser frontends, set `VITE_API_KEY` to match and configure `API_CORS_ORIGINS` with your site origins when not running locally.
+
+**Crawl4AI:** The crawler still needs `CRAWL4AI_API_KEY` / `CRAWL4AI_API_TOKEN` (and related options) in `.env` so the backend can call your Crawl4AI instance. That is separate from optional API key protection of the FastAPI surface.
 
 ## API Endpoints
 
@@ -303,6 +310,35 @@ Searches for content using semantic search or text search.
 
 - `200 OK`: Search completed successfully
 - `500 Internal Server Error`: Error during search
+
+### Pages
+
+#### Get Page by ID
+
+```
+GET /api/pages/{page_id}
+```
+
+Returns a single page (parent or chunk) by database ID. Use query parameters to control how much content is returned:
+
+- `content_chars` (integer, optional): Max characters of `content` to return (default 20000, max 200000). If truncated, `content_truncated` is true unless `full` is set.
+- `full` (boolean, optional): If true, return full content regardless of `content_chars`.
+
+#### List Chunks for a Parent Page
+
+```
+GET /api/pages/{page_id}/chunks
+```
+
+Returns all chunk rows whose parent is the given page ID.
+
+#### Chunk maintenance (deduplicate)
+
+```
+POST /api/pages/maintenance/deduplicate
+```
+
+Runs server-side cleanup to remove exact duplicate chunks and align parent/chunk embedding behavior. Intended for operators; call with the same API key headers as other `/api` routes when keys are enabled.
 
 ### Chat
 
@@ -709,6 +745,8 @@ Clears all preferences for a user.
 ## Workflow Examples
 
 ### Basic Crawl and Search Workflow
+
+When using API keys, add `-H 'x-api-key: YOUR_KEY'` to every `curl` example below.
 
 1. **Start a crawl:**
 

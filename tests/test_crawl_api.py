@@ -3,33 +3,38 @@ Script to test the crawl4ai API.
 """
 
 import os
+import sys
 import json
 import requests
 from dotenv import load_dotenv
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from crawl_client import _crawl4ai_request_headers
 
 # Load environment variables
 load_dotenv()
 
 def test_crawl_api():
     """Test the connection to the crawl4ai API."""
-    # API configuration
-    api_token = os.getenv("CRAWL4AI_API_TOKEN")
-    base_url = os.getenv("CRAWL4AI_BASE_URL")
-    
-    if not api_token or not base_url:
-        print("Error: CRAWL4AI_API_TOKEN or CRAWL4AI_BASE_URL not found in environment variables.")
+    base_url = os.getenv("CRAWL4AI_URL") or os.getenv("CRAWL4AI_BASE_URL")
+    timeout = float(os.getenv("CRAWL4AI_HTTP_TIMEOUT", "60"))
+    if not base_url:
+        print("Error: CRAWL4AI_URL/CRAWL4AI_BASE_URL not found in environment variables.")
         return
-    
-    headers = {
-        "Authorization": f"Bearer {api_token}",
-        "Content-Type": "application/json"
-    }
-    
+    try:
+        headers = _crawl4ai_request_headers()
+    except ValueError as e:
+        print(f"Error: {e}")
+        return
+
     # Test the health endpoint
     try:
         print(f"Testing health endpoint: {base_url}/health")
-        health_response = requests.get(f"{base_url}/health")
-        
+        health_response = requests.get(f"{base_url}/health", headers=headers, timeout=timeout)
+
         if health_response.status_code == 200:
             print("Health check successful!")
             print(f"Response: {health_response.json()}")
@@ -38,37 +43,39 @@ def test_crawl_api():
             print(f"Response: {health_response.text}")
     except Exception as e:
         print(f"Error checking health endpoint: {e}")
-    
+
     # Test a simple crawl
     try:
         print(f"\nTesting crawl endpoint: {base_url}/crawl")
-        
+
         payload = {
             "urls": "https://example.com",
             "priority": 10
         }
-        
+
         crawl_response = requests.post(
             f"{base_url}/crawl",
             headers=headers,
-            json=payload
+            json=payload,
+            timeout=timeout,
         )
-        
+
         if crawl_response.status_code == 200:
             print("Crawl request successful!")
             response_data = crawl_response.json()
             print(f"Task ID: {response_data.get('task_id')}")
-            
+
             # Check task status
             task_id = response_data.get('task_id')
             if task_id:
                 print(f"\nChecking task status: {base_url}/task/{task_id}")
-                
+
                 status_response = requests.get(
                     f"{base_url}/task/{task_id}",
-                    headers=headers
+                    headers=headers,
+                    timeout=timeout,
                 )
-                
+
                 if status_response.status_code == 200:
                     print("Task status check successful!")
                     print(f"Status: {status_response.json().get('status')}")
@@ -82,4 +89,4 @@ def test_crawl_api():
         print(f"Error testing crawl endpoint: {e}")
 
 if __name__ == "__main__":
-    test_crawl_api() 
+    test_crawl_api()

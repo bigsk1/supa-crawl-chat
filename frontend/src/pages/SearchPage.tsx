@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { apiService, SearchResult } from '@/api/apiService';
 import ReactMarkdown from 'react-markdown';
+import { sanitizeHtml } from '@/lib/sanitize';
 
 const SearchPage = () => {
   const [query, setQuery] = useState('');
@@ -17,7 +18,7 @@ const SearchPage = () => {
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (!query.trim()) {
       toast.error('Please enter a search query');
       return;
@@ -30,12 +31,12 @@ const SearchPage = () => {
     try {
       const searchResults = await apiService.search(query, undefined, threshold, limit);
       console.log('Search results:', searchResults); // Debug log
-      
+
       // Process results to handle duplicates
       const processedResults = processSearchResults(searchResults);
       setResults(processedResults);
       setHasSearched(true);
-      
+
       if (processedResults.length === 0) {
         toast('No results found for your query', {
           icon: 'ℹ️',
@@ -54,47 +55,71 @@ const SearchPage = () => {
     if (showDuplicates) {
       return results;
     }
-    
+
     // Group results by URL without the #chunk part
     const urlGroups = new Map<string, SearchResult[]>();
-    
+
     results.forEach(result => {
       // Remove #chunk-X from URL for grouping
       const baseUrl = result.url.split('#')[0];
-      
+
       if (!urlGroups.has(baseUrl)) {
         urlGroups.set(baseUrl, []);
       }
-      
+
       urlGroups.get(baseUrl)!.push(result);
     });
-    
+
     // For each group, keep only the result with the highest similarity
     const deduplicated: SearchResult[] = [];
-    
+
     urlGroups.forEach(group => {
       // Sort by similarity (highest first)
       group.sort((a, b) => b.similarity - a.similarity);
-      
+
       // Keep the highest similarity result
       deduplicated.push(group[0]);
     });
-    
+
     // Sort by similarity again
     deduplicated.sort((a, b) => b.similarity - a.similarity);
-    
+
     return deduplicated;
   };
 
+  const escapeHtml = (text: string) =>
+    text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+
   const highlightQuery = (text: string) => {
-    if (!query.trim() || !text) return text || '';
-    
+    const escapedText = escapeHtml(text || '');
+    if (!query.trim() || !escapedText) return escapedText;
+
     const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-    return text.replace(regex, '<mark class="bg-yellow-200 dark:bg-yellow-800">$1</mark>');
+    return escapedText.replace(regex, '<mark class="bg-yellow-200 dark:bg-yellow-800">$1</mark>');
   };
 
-  const handleViewResult = (result: SearchResult) => {
+  const handleViewResult = async (result: SearchResult) => {
     setSelectedResult(result);
+    if (!result.content || result.content_truncated) {
+      try {
+        const page = await apiService.getPageById(result.id);
+        setSelectedResult({
+          ...result,
+          content: page.content,
+          content_length: page.content_length,
+          content_truncated: page.content_truncated,
+          summary: page.summary || result.summary,
+          metadata: page.metadata || result.metadata,
+        });
+      } catch (error) {
+        console.error('Error loading full result content:', error);
+      }
+    }
   };
 
   const handleBackToResults = () => {
@@ -109,12 +134,12 @@ const SearchPage = () => {
   // Add a function to find related chunks for a result
   const findRelatedChunks = (result: SearchResult): SearchResult[] => {
     if (!result.url || !results.length) return [];
-    
+
     // Get base URL without chunk identifier
     const baseUrl = result.url.split('#')[0];
-    
+
     // Find all results with the same base URL that are chunks
-    return results.filter(r => 
+    return results.filter(r =>
       r.id !== result.id && // Not the current result
       r.url.startsWith(baseUrl) && // Same base URL
       r.is_chunk // Is a chunk
@@ -146,7 +171,7 @@ const SearchPage = () => {
       /^\s*\d+\. .*$/m, // Numbered lists
       /^\s*>\s.*$/m, // Blockquotes
     ];
-    
+
     return markdownPatterns.some(pattern => pattern.test(content));
   };
 
@@ -172,7 +197,7 @@ const SearchPage = () => {
 
           <div className="card p-6">
             <h2 className="text-2xl font-bold mb-2">{selectedResult.title || 'Untitled'}</h2>
-            
+
             <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
               <a
                 href={selectedResult.url}
@@ -183,19 +208,19 @@ const SearchPage = () => {
                 {selectedResult.url}
               </a>
             </p>
-            
+
             <div className="flex flex-wrap gap-2 mb-4">
               <span className="text-sm bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 px-2 py-1 rounded">
                 {Math.round(selectedResult.similarity * 100)}% match
               </span>
-              
+
               {selectedResult.is_chunk && (
                 <span className="text-sm bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 px-2 py-1 rounded">
                   Chunk {selectedResult.chunk_index}
                   {selectedResult.parent_title && ` of ${selectedResult.parent_title}`}
                 </span>
               )}
-              
+
               {selectedResult.site_name && (
                 <Link
                   to={`/sites/${selectedResult.site_id}`}
@@ -205,14 +230,14 @@ const SearchPage = () => {
                 </Link>
               )}
             </div>
-            
+
             {selectedResult.context && (
               <div className="bg-gray-100 dark:bg-gray-800 p-3 rounded mb-4">
                 <p className="text-sm font-medium">Context:</p>
                 <p className="text-sm">{selectedResult.context}</p>
               </div>
             )}
-            
+
             <div className="border-t border-gray-200 dark:border-gray-700 pt-4 mt-4">
               <div className="flex justify-between items-center mb-2">
                 <h3 className="text-lg font-medium">Content</h3>
@@ -241,7 +266,7 @@ const SearchPage = () => {
                   </button>
                 </div>
               </div>
-              
+
               {(selectedResult.content || selectedResult.snippet) ? (
                 <div className="max-h-[60vh] overflow-y-auto p-2 bg-gray-50 dark:bg-gray-800 rounded">
                   {contentViewMode === 'raw' ? (
@@ -251,7 +276,7 @@ const SearchPage = () => {
                   ) : (
                     <div className="prose dark:prose-invert max-w-none">
                       {detectContentType(selectedResult.content || selectedResult.snippet) === 'html' ? (
-                        <div dangerouslySetInnerHTML={{ __html: selectedResult.content || selectedResult.snippet || '' }} />
+                        <div dangerouslySetInnerHTML={{ __html: sanitizeHtml(selectedResult.content || selectedResult.snippet || '') }} />
                       ) : (
                         <ReactMarkdown>
                           {selectedResult.content || selectedResult.snippet || ''}
@@ -264,14 +289,14 @@ const SearchPage = () => {
                 <p className="text-gray-500 dark:text-gray-400">No content available</p>
               )}
             </div>
-            
+
             {/* Related chunks section */}
             {selectedResult.is_chunk && (
               <div className="mt-6 border-t border-gray-200 dark:border-gray-700 pt-4">
                 <h3 className="text-lg font-medium mb-3">Other Chunks from This Document</h3>
                 <div className="space-y-2">
                   {findRelatedChunks(selectedResult).map(chunk => (
-                    <div 
+                    <div
                       key={chunk.id}
                       className="p-3 border border-gray-200 dark:border-gray-700 rounded hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer"
                       onClick={() => handleViewResult(chunk)}
@@ -279,7 +304,7 @@ const SearchPage = () => {
                       <div className="flex justify-between items-start">
                         <div>
                           <p className="font-medium">
-                            Chunk {chunk.chunk_index} 
+                            Chunk {chunk.chunk_index}
                             {chunk.similarity && <span className="text-xs ml-2 text-gray-500">({Math.round(chunk.similarity * 100)}% match)</span>}
                           </p>
                           <p className="text-sm text-gray-600 dark:text-gray-400 mt-1 line-clamp-2">
@@ -289,20 +314,20 @@ const SearchPage = () => {
                       </div>
                     </div>
                   ))}
-                  
+
                   {findRelatedChunks(selectedResult).length === 0 && (
                     <p className="text-sm text-gray-500 dark:text-gray-400">No other chunks found for this document</p>
                   )}
                 </div>
               </div>
             )}
-            
+
             {!selectedResult.is_chunk && findRelatedChunks(selectedResult).length > 0 && (
               <div className="mt-6 border-t border-gray-200 dark:border-gray-700 pt-4">
                 <h3 className="text-lg font-medium mb-3">Chunks from This Document</h3>
                 <div className="space-y-2">
                   {findRelatedChunks(selectedResult).map(chunk => (
-                    <div 
+                    <div
                       key={chunk.id}
                       className="p-3 border border-gray-200 dark:border-gray-700 rounded hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer"
                       onClick={() => handleViewResult(chunk)}
@@ -310,7 +335,7 @@ const SearchPage = () => {
                       <div className="flex justify-between items-start">
                         <div>
                           <p className="font-medium">
-                            Chunk {chunk.chunk_index} 
+                            Chunk {chunk.chunk_index}
                             {chunk.similarity && <span className="text-xs ml-2 text-gray-500">({Math.round(chunk.similarity * 100)}% match)</span>}
                           </p>
                           <p className="text-sm text-gray-600 dark:text-gray-400 mt-1 line-clamp-2">
@@ -346,7 +371,7 @@ const SearchPage = () => {
                   {isLoading ? 'Searching...' : 'Search'}
                 </button>
               </div>
-              
+
               <div className="flex flex-wrap gap-4">
                 <div className="flex items-center">
                   <label htmlFor="threshold" className="mr-2 text-sm">Threshold:</label>
@@ -366,7 +391,7 @@ const SearchPage = () => {
                     <option value="0.7">0.7 (High precision)</option>
                   </select>
                 </div>
-                
+
                 <div className="flex items-center">
                   <label htmlFor="limit" className="mr-2 text-sm">Results:</label>
                   <select
@@ -383,7 +408,7 @@ const SearchPage = () => {
                     <option value="100">100</option>
                   </select>
                 </div>
-                
+
                 <div className="flex items-center">
                   <label className="flex items-center cursor-pointer">
                     <input
@@ -420,7 +445,7 @@ const SearchPage = () => {
                       <h2 className="text-lg font-semibold">
                         <span
                           dangerouslySetInnerHTML={{
-                            __html: highlightQuery(result.title || 'Untitled'),
+                            __html: sanitizeHtml(highlightQuery(result.title || 'Untitled')),
                           }}
                         />
                       </h2>
@@ -428,7 +453,7 @@ const SearchPage = () => {
                         {Math.round(result.similarity * 100)}% match
                       </span>
                     </div>
-                    
+
                     <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">
                       {result.site_name && (
                         <Link
@@ -448,21 +473,21 @@ const SearchPage = () => {
                         {new URL(result.url).hostname}
                       </a>
                     </p>
-                    
+
                     <div className="text-sm mb-4">
                       <span
                         dangerouslySetInnerHTML={{
-                          __html: highlightQuery((result.snippet || result.content || '').substring(0, 300) + '...'),
+                          __html: sanitizeHtml(highlightQuery((result.snippet || result.content || '').substring(0, 300) + '...')),
                         }}
                       />
                     </div>
-                    
+
                     {result.context && (
                       <div className="text-xs bg-gray-100 dark:bg-gray-800 p-2 rounded mb-2">
                         {result.context}
                       </div>
                     )}
-                    
+
                     <div className="flex justify-between items-center">
                       <button
                         onClick={() => handleViewResult(result)}
@@ -470,7 +495,7 @@ const SearchPage = () => {
                       >
                         View Full Content
                       </button>
-                      
+
                       {result.is_chunk && (
                         <span className="text-xs bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 px-2 py-1 rounded">
                           Chunk {result.chunk_index}
@@ -504,7 +529,7 @@ const SearchPage = () => {
                 <li>Click on site names to view all pages from that site</li>
                 <li>Click "View Full Content" to see the complete result</li>
               </ul>
-              
+
               <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg mt-6">
                 <h3 className="text-sm font-medium text-blue-800 dark:text-blue-300">Tips for Better Results</h3>
                 <ul className="list-disc list-inside space-y-1 text-xs text-blue-700 dark:text-blue-400 mt-2">
@@ -523,4 +548,4 @@ const SearchPage = () => {
   );
 };
 
-export default SearchPage; 
+export default SearchPage;
