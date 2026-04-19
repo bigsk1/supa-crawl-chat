@@ -1181,6 +1181,7 @@ class WebCrawler:
         offset: int = 0,
         include_content: bool = True,
         content_chars: Optional[int] = None,
+        preview_chars: int = 500,
     ) -> List[Dict[str, Any]]:
         """Get pages for a specific site.
 
@@ -1199,4 +1200,5 @@ class WebCrawler:
             offset=offset,
             include_content=include_content,
             content_chars=content_chars,
+            preview_chars=preview_chars,
         )

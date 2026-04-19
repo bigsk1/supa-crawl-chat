@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Query, HTTPException, status, Path, Response, Request
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app_logging import get_audit_logger, get_logger
 from api.supa_auth import get_client_ip
@@ -85,6 +85,10 @@ class Page(BaseModel):
     url: str
     title: Optional[str] = None
     content: Optional[str] = None
+    content_preview: Optional[str] = Field(
+        default=None,
+        description="First N characters of raw page markdown when include_content=false (for markdown previews in list UIs).",
+    )
     content_length: Optional[int] = None
     content_truncated: Optional[bool] = None
     summary: Optional[str] = None
@@ -230,7 +234,8 @@ async def get_site_pages(
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of pages to return"),
     offset: int = Query(0, ge=0, description="Number of pages to skip"),
     include_content: bool = Query(False, description="Include page content in the listing"),
-    content_chars: int = Query(1000, ge=0, le=20000, description="Maximum content characters per page when include_content=true")
+    content_chars: int = Query(10000, ge=0, le=20000, description="Maximum content characters per page when include_content=true"),
+    preview_chars: int = Query(500, ge=0, le=5000, description="When include_content=false, length of raw markdown returned in content_preview"),
 ):
     """
     Get pages for a specific site.
@@ -238,6 +243,7 @@ async def get_site_pages(
     - **site_id**: The ID of the site
     - **include_chunks**: Whether to include chunks in the results
     - **limit**: Maximum number of pages to return
+    - **content_preview**: When ``include_content`` is false, the API returns ``content_preview`` (leading markdown) without loading full bodies in the query.
     """
     try:
         # Get pages
@@ -249,6 +255,7 @@ async def get_site_pages(
             offset=offset,
             include_content=include_content,
             content_chars=content_chars,
+            preview_chars=preview_chars,
         )
 
         # Get site name

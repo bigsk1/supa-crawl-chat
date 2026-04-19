@@ -1398,6 +1398,7 @@ class SupabaseClient:
         offset: int = 0,
         include_content: bool = True,
         content_chars: Optional[int] = None,
+        preview_chars: int = 500,
     ) -> List[Dict[str, Any]]:
         """Get pages for a specific site.
 
@@ -1408,6 +1409,8 @@ class SupabaseClient:
             offset: Number of rows to skip.
             include_content: Whether to include page content.
             content_chars: Optional maximum number of characters per content field.
+            preview_chars: When include_content is False, return this many leading characters
+                of raw markdown as ``content_preview`` without loading full bodies in the SELECT.
 
         Returns:
             List of pages for the site.
@@ -1417,43 +1420,89 @@ class SupabaseClient:
             conn = self._get_connection()
             cur = conn.cursor()
 
-            # Build the query based on whether to include chunks
-            if include_chunks:
-                query = """
-                SELECT
-                    p.id, p.site_id, p.url, p.title, p.content, p.summary,
-                    LENGTH(p.content) AS content_length,
-                    p.metadata, p.is_chunk, p.chunk_index, p.parent_id,
-                    p.created_at, p.updated_at,
-                    parent.title as parent_title
-                FROM
-                    crawl_pages p
-                    LEFT JOIN crawl_pages parent ON p.parent_id = parent.id
-                WHERE
-                    p.site_id = %s
-                ORDER BY
-                    p.url, p.is_chunk, p.chunk_index
-                LIMIT %s OFFSET %s
-                """
-            else:
-                query = """
-                SELECT
-                    id, site_id, url, title, content, summary,
-                    LENGTH(content) AS content_length,
-                    metadata,
-                    created_at, updated_at,
-                    is_chunk, chunk_index, parent_id
-                FROM
-                    crawl_pages
-                WHERE
-                    site_id = %s AND
-                    (is_chunk IS NULL OR is_chunk = FALSE)
-                ORDER BY
-                    url
-                LIMIT %s OFFSET %s
-                """
+            pc = max(0, min(int(preview_chars), 5000))
 
-            cur.execute(query, (site_id, limit, offset))
+            # When listing without full content, select only a substring for previews (cheaper I/O).
+            if include_chunks:
+                if include_content:
+                    query = """
+                    SELECT
+                        p.id, p.site_id, p.url, p.title, p.content, p.summary,
+                        LENGTH(p.content) AS content_length,
+                        p.metadata, p.is_chunk, p.chunk_index, p.parent_id,
+                        p.created_at, p.updated_at,
+                        parent.title as parent_title
+                    FROM
+                        crawl_pages p
+                        LEFT JOIN crawl_pages parent ON p.parent_id = parent.id
+                    WHERE
+                        p.site_id = %s
+                    ORDER BY
+                        p.url, p.is_chunk, p.chunk_index
+                    LIMIT %s OFFSET %s
+                    """
+                    cur.execute(query, (site_id, limit, offset))
+                else:
+                    query = """
+                    SELECT
+                        p.id, p.site_id, p.url, p.title,
+                        NULL::text AS content,
+                        SUBSTRING(p.content FROM 1 FOR %s) AS content_preview,
+                        LENGTH(p.content) AS content_length,
+                        p.summary,
+                        p.metadata, p.is_chunk, p.chunk_index, p.parent_id,
+                        p.created_at, p.updated_at,
+                        parent.title as parent_title
+                    FROM
+                        crawl_pages p
+                        LEFT JOIN crawl_pages parent ON p.parent_id = parent.id
+                    WHERE
+                        p.site_id = %s
+                    ORDER BY
+                        p.url, p.is_chunk, p.chunk_index
+                    LIMIT %s OFFSET %s
+                    """
+                    cur.execute(query, (pc, site_id, limit, offset))
+            else:
+                if include_content:
+                    query = """
+                    SELECT
+                        id, site_id, url, title, content, summary,
+                        LENGTH(content) AS content_length,
+                        metadata,
+                        created_at, updated_at,
+                        is_chunk, chunk_index, parent_id
+                    FROM
+                        crawl_pages
+                    WHERE
+                        site_id = %s AND
+                        (is_chunk IS NULL OR is_chunk = FALSE)
+                    ORDER BY
+                        url
+                    LIMIT %s OFFSET %s
+                    """
+                    cur.execute(query, (site_id, limit, offset))
+                else:
+                    query = """
+                    SELECT
+                        id, site_id, url, title,
+                        NULL::text AS content,
+                        SUBSTRING(content FROM 1 FOR %s) AS content_preview,
+                        LENGTH(content) AS content_length,
+                        summary,
+                        metadata,
+                        created_at, updated_at,
+                        is_chunk, chunk_index, parent_id
+                    FROM
+                        crawl_pages
+                    WHERE
+                        site_id = %s AND
+                        (is_chunk IS NULL OR is_chunk = FALSE)
+                    ORDER BY
+                        url
+                    LIMIT %s OFFSET %s
+                    """
+                    cur.execute(query, (pc, site_id, limit, offset))
 
             # Convert results to dictionaries
             columns = [desc[0] for desc in cur.description]
@@ -1468,12 +1517,17 @@ class SupabaseClient:
 
                 if not include_content:
                     page_dict["content"] = None
-                    page_dict["content_truncated"] = content_length > 0
+                    page_dict["content_truncated"] = content_length > pc
+                    # content_preview may be missing on older code paths; normalize
+                    if "content_preview" not in page_dict:
+                        page_dict["content_preview"] = None
                 elif content is not None and content_chars is not None and content_chars >= 0 and len(content) > content_chars:
                     page_dict["content"] = content[:content_chars]
                     page_dict["content_truncated"] = True
+                    page_dict["content_preview"] = None
                 else:
                     page_dict["content_truncated"] = False
+                    page_dict["content_preview"] = None
 
                 # Convert datetime objects to strings
                 if 'created_at' in page_dict and page_dict['created_at'] is not None:

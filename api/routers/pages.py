@@ -139,7 +139,11 @@ async def get_page_by_id(
 @router.get("/{page_id}/chunks", response_model=List[Page])
 async def get_chunks_by_parent_id(page_id: int, db_client: SupabaseClient = Depends(get_db_client)):
     """
-    Get all chunks for a specific parent page.
+    Return every **chunk** row whose `parent_id` is this page (full stored text per chunk).
+
+    This is the supported way to load all segments for “full context” for a parent page.
+    External tools sometimes use a fictional `action=page_chunks` style parameter — here the
+    contract is **`GET /api/pages/{page_id}/chunks`** only.
     """
     print(f"Fetching chunks for parent ID: {page_id}")
     try:

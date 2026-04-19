@@ -18,6 +18,7 @@ class SearchResult(BaseModel):
     url: str
     title: Optional[str] = None
     content: Optional[str] = None
+    content_preview: Optional[str] = None
     content_length: Optional[int] = None
     content_truncated: Optional[bool] = None
     summary: Optional[str] = None
@@ -115,7 +116,8 @@ async def search(
     site_name: Optional[str] = Query(None, description="Optional site name/url substring to filter results by"),
     after: Optional[datetime] = Query(None, description="Only include results crawled after this ISO timestamp when metadata is available"),
     include_content: bool = Query(False, description="Include result content in the response"),
-    content_chars: int = Query(2000, ge=0, le=50000, description="Maximum content characters per result"),
+    content_chars: int = Query(10000, ge=0, le=50000, description="Maximum content characters per result when include_content=true"),
+    preview_chars: int = Query(500, ge=0, le=5000, description="When include_content=false, length of raw markdown in content_preview"),
     dedupe: bool = Query(True, description="Return only the best result per source URL")
 ):
     """
@@ -159,12 +161,18 @@ async def search(
 
         # Convert results to SearchResult model
         search_results = []
+        pc = max(0, min(preview_chars, 5000))
         for result in results:
             content = result.get("content")
             content_length = len(content) if content else 0
+            preview: Optional[str] = None
             if not include_content:
                 response_content = None
-                content_truncated = content_length > 0
+                if content:
+                    preview = content[:pc] if pc > 0 else ""
+                    content_truncated = content_length > len(preview)
+                else:
+                    content_truncated = False
             elif content and len(content) > content_chars:
                 response_content = content[:content_chars]
                 content_truncated = True
@@ -179,6 +187,7 @@ async def search(
                 url=result.get("url"),
                 title=result.get("title"),
                 content=response_content,
+                content_preview=preview if not include_content else None,
                 content_length=content_length,
                 content_truncated=content_truncated,
                 summary=result.get("summary"),

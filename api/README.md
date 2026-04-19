@@ -242,6 +242,9 @@ Gets pages for a specific site.
 
 - `include_chunks` (boolean, optional): Whether to include chunks in the results. Default: false
 - `limit` (integer, optional): Maximum number of pages to return. Default: 100
+- `include_content` (boolean, optional): Include full page `content`. Default: false
+- `content_chars` (integer, optional): Max characters per `content` when `include_content=true`. Default: **10000**
+- `preview_chars` (integer, optional): When `include_content=false`, length of raw markdown in `content_preview`. Default: **500**
 
 **Response:**
 
@@ -281,8 +284,9 @@ Searches for content using semantic search or text search.
 **Query Parameters:**
 
 - `query` (string, required): The search query
-- `threshold` (float, optional): Similarity threshold (0-1). Default: 0.5
+- `threshold` (float, optional): Similarity threshold (0-1). Default: 0.3
 - `limit` (integer, optional): Maximum number of results. Default: 10
+- `include_content` / `content_chars` / `preview_chars`: When `include_content` is false, responses include `content_preview` (leading raw markdown, default 500 chars) instead of full `content`. When true, `content` is capped by `content_chars` (default **10000**).
 - `text_only` (boolean, optional): Use text search instead of embeddings. Default: false
 - `site_id` (integer, optional): Filter results by site ID
 
