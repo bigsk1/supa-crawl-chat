@@ -167,7 +167,7 @@ This will start the backend API on port 8001 and the frontend dev server on port
 
 ### Logging
 
-The backend uses **one rotating application log** by default: `log/app.log` (configure `APP_LOG_DIR`, `LOG_FILE`, `LOG_LEVEL`, and rotation via `.env`; see `.env.example`). HTTP access lines (`api_http METHOD /path -> status ms`), chat traces, and other services share that file — **there is no separate `log/api/` directory**. Set `API_ACCESS_LOG=false` to turn off per-request `api_http` lines; `/api/health`, `/docs`, `/redoc`, and `/openapi.json` are skipped to reduce noise. Optional per-crawl detail logs may appear under `log/crawl/` when crawls run.
+The backend uses a **rotating application log** by default: `log/app.log` (configure `APP_LOG_DIR`, `LOG_FILE`, `LOG_LEVEL`, and rotation via `.env`; see `.env.example`). HTTP access lines (`api_http METHOD /path -> status ms`), chat traces, and other services share that file. **Important operator actions** (for example site delete) are also written to **`log/audit.log`** by default (`AUDIT_LOG_FILE`, `AUDIT_LOG_*` rotation, `AUDIT_LOG_ENABLED=false` to disable). There is no separate `log/api/` directory. Set `API_ACCESS_LOG=false` to turn off per-request `api_http` lines; `/api/health`, `/docs`, `/redoc`, and `/openapi.json` are skipped to reduce noise. Optional per-crawl detail logs may appear under `log/crawl/` when crawls run.
 
  If you need a complete solution - crawl4ai with or without a local Supabase all in Docker see [Docker Deployment](#docker-deployment) section of the README
 

@@ -5,9 +5,17 @@ import { apiService, Site } from '@/api/apiService';
 import { api } from '@/api/apiWrapper';
 import axios from 'axios';
 import { Button } from '@/components/ui/button';
-import { RefreshCw } from 'lucide-react';
+import { RefreshCw, Trash2 } from 'lucide-react';
 import { createNotification } from '@/utils/notifications';
 import { PageHeader } from '@/components/PageHeader';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 
 const SitesPage = () => {
   const [sites, setSites] = useState<Site[]>([]);
@@ -16,6 +24,8 @@ const SitesPage = () => {
   const [debugInfo, setDebugInfo] = useState<string | null>(null);
   const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [siteToDelete, setSiteToDelete] = useState<Site | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   // Load sites when the component mounts and set up polling
   useEffect(() => {
@@ -144,6 +154,22 @@ const SitesPage = () => {
     }
   };
 
+  const confirmDeleteSite = async () => {
+    if (!siteToDelete) return;
+    setDeleting(true);
+    try {
+      await apiService.deleteSite(siteToDelete.id);
+      toast.success(`Deleted “${siteToDelete.name || 'site'}”`);
+      setSiteToDelete(null);
+      await loadSites(true);
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to delete site');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const manualRefresh = async () => {
     setRefreshing(true);
     try {
@@ -220,34 +246,52 @@ const SitesPage = () => {
       ) : sites.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {sites.map((site) => (
-            <Link
+            <div
               key={site.id}
-              to={`/sites/${site.id}`}
-              className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 hover:shadow-md transition-shadow duration-200 flex flex-col h-full"
+              className="relative bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 hover:shadow-md transition-shadow duration-200 flex flex-col h-full"
             >
-              <h2 className="text-xl font-semibold mb-2 truncate">{site.name || 'Unnamed Site'}</h2>
-              
-              <p className="text-sm text-gray-600 dark:text-gray-400 mb-4 truncate">
-                {site.url || 'No URL'}
-              </p>
-              
-              {site.description && (
-                <p className="text-sm mb-4 line-clamp-2">{site.description}</p>
-              )}
-              
-              <div className="flex justify-between items-center mt-auto pt-4 border-t border-gray-200 dark:border-gray-700">
-                <div className="flex items-center">
-                  <span className="text-sm font-medium">{site.page_count || 0}</span>
-                  <span className="text-xs text-gray-600 dark:text-gray-400 ml-1">
-                    {site.page_count === 1 ? 'page' : 'pages'}
-                  </span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="absolute right-2 top-2 z-10 h-9 w-9 text-muted-foreground hover:text-destructive"
+                aria-label={`Delete site ${site.name || site.id}`}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setSiteToDelete(site);
+                }}
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+              <Link
+                to={`/sites/${site.id}`}
+                className="p-6 flex flex-col h-full flex-1 min-w-0"
+              >
+                <h2 className="text-xl font-semibold mb-2 truncate pr-8">{site.name || 'Unnamed Site'}</h2>
+
+                <p className="text-sm text-gray-600 dark:text-gray-400 mb-4 truncate">
+                  {site.url || 'No URL'}
+                </p>
+
+                {site.description && (
+                  <p className="text-sm mb-4 line-clamp-2">{site.description}</p>
+                )}
+
+                <div className="flex justify-between items-center mt-auto pt-4 border-t border-gray-200 dark:border-gray-700">
+                  <div className="flex items-center">
+                    <span className="text-sm font-medium">{site.page_count || 0}</span>
+                    <span className="text-xs text-gray-600 dark:text-gray-400 ml-1">
+                      {site.page_count === 1 ? 'page' : 'pages'}
+                    </span>
+                  </div>
+
+                  <div className="text-xs text-gray-600 dark:text-gray-400">
+                    {site.created_at ? formatDate(site.created_at) : 'No date'}
+                  </div>
                 </div>
-                
-                <div className="text-xs text-gray-600 dark:text-gray-400">
-                  {site.created_at ? formatDate(site.created_at) : 'No date'}
-                </div>
-              </div>
-            </Link>
+              </Link>
+            </div>
           ))}
         </div>
       ) : (
@@ -264,6 +308,32 @@ const SitesPage = () => {
           </Link>
         </div>
       )}
+
+      <Dialog open={!!siteToDelete} onOpenChange={(open) => !open && setSiteToDelete(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete site?</DialogTitle>
+            <DialogDescription>
+              This removes the site, all crawled pages and chunks, and crawl job history for this site. This cannot be undone.
+              {siteToDelete ? (
+                <>
+                  <br />
+                  <span className="font-medium text-foreground mt-2 block truncate">{siteToDelete.name}</span>
+                  <span className="text-xs break-all">{siteToDelete.url}</span>
+                </>
+              ) : null}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setSiteToDelete(null)} disabled={deleting}>
+              Cancel
+            </Button>
+            <Button type="button" variant="destructive" onClick={confirmDeleteSite} disabled={deleting}>
+              {deleting ? 'Deleting…' : 'Delete'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

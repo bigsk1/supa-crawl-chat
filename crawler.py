@@ -16,6 +16,28 @@ from content_enhancer import ContentEnhancer
 from security_utils import UnsafeURL, validate_fetch_url
 from utils import console, print_header, print_success, print_error, print_warning, print_info, get_rich_progress
 
+
+def _extract_urls_from_text_or_markdown(body: str) -> List[str]:
+    """
+    When a URL is labeled 'sitemap' but returns plain text or Markdown (e.g. docs llms.txt),
+    extract http(s) URLs. XML sitemap parsing is not applicable.
+    """
+    seen: set[str] = set()
+    out: List[str] = []
+    for m in re.finditer(r"\[[^\]]*\]\((https?://[^)\s]+)\)", body):
+        u = m.group(1).rstrip(").,;")
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    # Exclude `)` so lines like `](https://...md):` do not swallow the closing `):`
+    for m in re.finditer(r"https?://[^\s<>\"\)]+", body):
+        u = m.group(0).rstrip(").,;]")
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
 class WebCrawler:
     """Main crawler class that ties together crawl4ai, embeddings, and database storage."""
 
@@ -63,6 +85,49 @@ class WebCrawler:
 
         # Join with spaces
         return ' '.join(parts)
+
+    def _extraction_and_crawl_kwargs_from_advanced(
+        self, advanced_options: Dict[str, Any]
+    ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        """Build Crawl4AI extraction_config and keyword args for crawl_and_wait/start_crawl."""
+        extraction_type = advanced_options.get("extraction_type", "basic") or "basic"
+        extraction_config: Dict[str, Any] = {"type": extraction_type}
+        if extraction_type == "custom" and "css_selector" in advanced_options:
+            extraction_config["css_selector"] = advanced_options["css_selector"]
+        crawl_options: Dict[str, Any] = {}
+        if "headless" in advanced_options:
+            crawl_options["headless"] = advanced_options["headless"]
+        if "browser_type" in advanced_options:
+            crawl_options["browser_type"] = advanced_options["browser_type"]
+        if "proxy" in advanced_options:
+            crawl_options["proxy"] = advanced_options["proxy"]
+        if "javascript_enabled" in advanced_options:
+            crawl_options["javascript_enabled"] = advanced_options["javascript_enabled"]
+        if "user_agent" in advanced_options:
+            crawl_options["user_agent"] = advanced_options["user_agent"]
+        if "timeout" in advanced_options:
+            crawl_options["timeout"] = advanced_options["timeout"]
+        if "wait_for_selector" in advanced_options:
+            crawl_options["wait_for"] = advanced_options["wait_for_selector"]
+        if "wait_for_timeout" in advanced_options:
+            crawl_options["wait_for_timeout"] = advanced_options["wait_for_timeout"]
+        if "download_images" in advanced_options:
+            crawl_options["download_images"] = advanced_options["download_images"]
+        if "download_videos" in advanced_options:
+            crawl_options["download_videos"] = advanced_options["download_videos"]
+        if "download_files" in advanced_options:
+            crawl_options["download_files"] = advanced_options["download_files"]
+        if "follow_redirects" in advanced_options:
+            crawl_options["follow_redirects"] = advanced_options["follow_redirects"]
+        if "max_depth" in advanced_options:
+            crawl_options["max_depth"] = advanced_options["max_depth"]
+        if "follow_external_links" in advanced_options:
+            crawl_options["follow_external_links"] = advanced_options["follow_external_links"]
+        if "include_patterns" in advanced_options:
+            crawl_options["include_patterns"] = advanced_options["include_patterns"]
+        if "exclude_patterns" in advanced_options:
+            crawl_options["exclude_patterns"] = advanced_options["exclude_patterns"]
+        return extraction_config, crawl_options
 
     def process_crawl_results(self, results: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Process the results from the crawl4ai API.
@@ -668,58 +733,7 @@ class WebCrawler:
             site_id = self.db_client.add_site(site_name, url, description)
             print_success(f"Added new site with ID: {site_id}")
 
-        # Configure extraction based on Crawl4AI v0.5.0 documentation
-        extraction_type = advanced_options.get('extraction_type', 'basic')
-        extraction_config = {
-            "type": extraction_type
-        }
-
-        # Add CSS selector if provided and extraction type is custom
-        if extraction_type == 'custom' and 'css_selector' in advanced_options:
-            extraction_config["css_selector"] = advanced_options['css_selector']
-
-        # Prepare additional crawl options
-        crawl_options = {}
-
-        # Browser options
-        if 'headless' in advanced_options:
-            crawl_options['headless'] = advanced_options['headless']
-        if 'browser_type' in advanced_options:
-            crawl_options['browser_type'] = advanced_options['browser_type']
-        if 'proxy' in advanced_options:
-            crawl_options['proxy'] = advanced_options['proxy']
-        if 'javascript_enabled' in advanced_options:
-            crawl_options['javascript_enabled'] = advanced_options['javascript_enabled']
-        if 'user_agent' in advanced_options:
-            crawl_options['user_agent'] = advanced_options['user_agent']
-
-        # Page navigation options
-        if 'timeout' in advanced_options:
-            crawl_options['timeout'] = advanced_options['timeout']
-        if 'wait_for_selector' in advanced_options:
-            crawl_options['wait_for'] = advanced_options['wait_for_selector']
-        if 'wait_for_timeout' in advanced_options:
-            crawl_options['wait_for_timeout'] = advanced_options['wait_for_timeout']
-
-        # Media handling options
-        if 'download_images' in advanced_options:
-            crawl_options['download_images'] = advanced_options['download_images']
-        if 'download_videos' in advanced_options:
-            crawl_options['download_videos'] = advanced_options['download_videos']
-        if 'download_files' in advanced_options:
-            crawl_options['download_files'] = advanced_options['download_files']
-
-        # Link handling options
-        if 'follow_redirects' in advanced_options:
-            crawl_options['follow_redirects'] = advanced_options['follow_redirects']
-        if 'max_depth' in advanced_options:
-            crawl_options['max_depth'] = advanced_options['max_depth']
-        if 'follow_external_links' in advanced_options:
-            crawl_options['follow_external_links'] = advanced_options['follow_external_links']
-        if 'include_patterns' in advanced_options:
-            crawl_options['include_patterns'] = advanced_options['include_patterns']
-        if 'exclude_patterns' in advanced_options:
-            crawl_options['exclude_patterns'] = advanced_options['exclude_patterns']
+        extraction_config, crawl_options = self._extraction_and_crawl_kwargs_from_advanced(advanced_options)
 
         # Start the crawl
         try:
@@ -772,6 +786,35 @@ class WebCrawler:
             return site_id
 
         return site_id
+
+    def refresh_single_page_at_url(
+        self,
+        site_id: int,
+        page_url: str,
+        advanced_options: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, int]:
+        """Fetch one URL via Crawl4AI (max_depth=0, no following links), enhance, merge into the site."""
+        page_url = validate_fetch_url(str(page_url), purpose="page refresh")
+        site = self.db_client.get_site_by_id(site_id)
+        if not site:
+            raise ValueError(f"Site {site_id} not found")
+        opts = dict(advanced_options or {})
+        extraction_config, crawl_options = self._extraction_and_crawl_kwargs_from_advanced(opts)
+        crawl_options["max_depth"] = 0
+        crawl_options["follow_external_links"] = False
+        crawl_results = self.crawl_client.crawl_and_wait(
+            page_url,
+            extraction_config=extraction_config,
+            **crawl_options,
+        )
+        pages = self.process_crawl_results(crawl_results)
+        if not pages:
+            raise ValueError("No content returned for this URL")
+        enhanced_pages = asyncio.run(self.enhance_pages(pages))
+        self.db_client.add_pages(site_id, enhanced_pages, replace_chunks=True)
+        n_parent = sum(1 for p in enhanced_pages if not p.get("is_chunk"))
+        n_chunk = sum(1 for p in enhanced_pages if p.get("is_chunk"))
+        return {"parent_pages": n_parent, "chunks": n_chunk, "stored": len(enhanced_pages)}
 
     def crawl_sitemap(self, sitemap_url: str, site_name: Optional[str] = None,
                      description: Optional[str] = None, max_urls: Optional[int] = None,
@@ -863,21 +906,41 @@ class WebCrawler:
             response = requests.get(sitemap_url, timeout=int(os.getenv("SITEMAP_FETCH_TIMEOUT", "30")))
             response.raise_for_status()  # Raise an exception for HTTP errors
 
-            # Parse the XML
-            root = ET.fromstring(response.content)
+            raw = response.content
+            urls: List[str] = []
 
-            # Define the XML namespace
-            namespace = {'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
+            try:
+                root = ET.fromstring(raw)
+            except ET.ParseError:
+                text = raw.decode("utf-8", errors="replace")
+                urls = _extract_urls_from_text_or_markdown(text)
+                if not urls:
+                    print_error(
+                        "Not valid XML sitemap and no http(s) URLs found in plain text/Markdown. "
+                        "Use a real sitemap.xml URL, or for llms.txt-style indexes the file must list links."
+                    )
+                    return site_id
+                print_info(
+                    f"Non-XML document (e.g. llms.txt/Markdown); extracted {len(urls)} URL(s) from links and bare URLs."
+                )
+            else:
+                # Standard sitemap XML: urlset with namespace http://www.sitemaps.org/schemas/sitemap/0.9
+                namespace = {"ns": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+                for url_element in root.findall(".//ns:url/ns:loc", namespace):
+                    if url_element.text:
+                        urls.append(url_element.text.strip())
 
-            # Extract URLs from the sitemap
-            urls = []
-            for url_element in root.findall('.//ns:url/ns:loc', namespace):
-                url = url_element.text.strip()
-                urls.append(url)
+                # Sitemap index: <sitemap><loc>...</loc></sitemap>
+                if not urls:
+                    for loc in root.findall(
+                        ".//{http://www.sitemaps.org/schemas/sitemap/0.9}sitemap/{http://www.sitemaps.org/schemas/sitemap/0.9}loc"
+                    ):
+                        if loc.text:
+                            urls.append(loc.text.strip())
 
-            if not urls:
-                print_warning(f"No URLs found in sitemap: {sitemap_url}")
-                return site_id
+                if not urls:
+                    print_warning(f"No URLs found in sitemap: {sitemap_url}")
+                    return site_id
 
             print_info(f"Found {len(urls)} URLs in sitemap")
 

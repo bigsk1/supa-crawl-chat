@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { apiService, Site, Page } from '@/api/apiService';
 import { api } from '@/api/apiWrapper';
@@ -11,6 +11,14 @@ import PageListItem from '@/components/PageListItem';
 import { createNotification } from '@/utils/notifications';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { PageHeader } from '@/components/PageHeader';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 
 // Add this type definition at the top of the file, after imports
 type FilteredPage = {
@@ -32,6 +40,7 @@ type FilteredPage = {
 
 const SiteDetailPage = () => {
   const { siteId } = useParams<{ siteId: string }>();
+  const navigate = useNavigate();
 
   const [site, setSite] = useState<Site | null>(null);
   const [pages, setPages] = useState<Page[]>([]);
@@ -58,6 +67,11 @@ const SiteDetailPage = () => {
   const [showDebug, setShowDebug] = useState(false);
   const [recrawlBusy, setRecrawlBusy] = useState(false);
   const recrawlPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deletingSite, setDeletingSite] = useState(false);
+  const [pageDeleteDialogOpen, setPageDeleteDialogOpen] = useState(false);
+  const [pageToDelete, setPageToDelete] = useState<Page | null>(null);
+  const [deletingPage, setDeletingPage] = useState(false);
 
   const stopRecrawlPoll = () => {
     if (recrawlPollRef.current) {
@@ -250,6 +264,60 @@ const SiteDetailPage = () => {
     }
   };
 
+  const startCrawlJobPoll = (siteNumericId: number, kind: 'site' | 'page') => {
+    const prefix = kind === 'page' ? 'page-recrawl' : 'site-recrawl';
+    let ticks = 0;
+    const norm = (v: unknown) =>
+      typeof v === 'string' ? v.trim().toLowerCase() : '';
+    const pollOnce = async () => {
+      ticks += 1;
+      if (ticks > 150) {
+        stopRecrawlPoll();
+        setRecrawlBusy(false);
+        toast('Crawl is taking a while — use Refresh Data to check status.', {
+          id: `${prefix}-timeout`,
+          duration: 5000,
+        });
+        return;
+      }
+      try {
+        const raw = (await apiService.getCrawlStatus(siteNumericId)) as unknown as Record<
+          string,
+          unknown
+        >;
+        const job = raw.job as Record<string, unknown> | null | undefined;
+        const jobSt = norm(job?.status);
+        const topSt = norm(raw.status);
+        const st = jobSt || topSt;
+        if (st === 'completed') {
+          stopRecrawlPoll();
+          setRecrawlBusy(false);
+          toast.success(kind === 'page' ? 'Page recrawl finished' : 'Recrawl finished', {
+            id: `${prefix}-done`,
+            duration: 3000,
+          });
+          await loadSiteDetails(siteNumericId, { notifySuccess: false });
+        } else if (st === 'failed') {
+          stopRecrawlPoll();
+          setRecrawlBusy(false);
+          toast.error(
+            kind === 'page'
+              ? 'Page recrawl failed — check server logs'
+              : 'Recrawl failed — check server logs or crawl job in the API',
+            { id: `${prefix}-fail`, duration: 5000 }
+          );
+          await loadSiteDetails(siteNumericId, { notifySuccess: false });
+        }
+      } catch {
+        /* transient poll errors ignored */
+      }
+    };
+    void pollOnce();
+    recrawlPollRef.current = setInterval(() => {
+      void pollOnce();
+    }, 4000);
+  };
+
   const handleRecrawlSite = async () => {
     if (!siteId || recrawlBusy) return;
     const id = parseInt(siteId, 10);
@@ -262,52 +330,57 @@ const SiteDetailPage = () => {
         id: 'site-recrawl',
         duration: 4000,
       });
-      let ticks = 0;
-      const norm = (v: unknown) =>
-        typeof v === 'string' ? v.trim().toLowerCase() : '';
-      const pollOnce = async () => {
-        ticks += 1;
-        if (ticks > 150) {
-          stopRecrawlPoll();
-          setRecrawlBusy(false);
-          toast('Crawl is taking a while — use Refresh Data to check status.', {
-            id: 'site-recrawl-timeout',
-            duration: 5000,
-          });
-          return;
-        }
-        try {
-          const raw = (await apiService.getCrawlStatus(id)) as unknown as Record<string, unknown>;
-          const job = raw.job as Record<string, unknown> | null | undefined;
-          const jobSt = norm(job?.status);
-          const topSt = norm(raw.status);
-          const st = jobSt || topSt;
-          if (st === 'completed') {
-            stopRecrawlPoll();
-            setRecrawlBusy(false);
-            toast.success('Recrawl finished', { id: 'site-recrawl-done', duration: 3000 });
-            await loadSiteDetails(id, { notifySuccess: false });
-          } else if (st === 'failed') {
-            stopRecrawlPoll();
-            setRecrawlBusy(false);
-            toast.error('Recrawl failed — check server logs or crawl job in the API', {
-              id: 'site-recrawl-fail',
-              duration: 5000,
-            });
-            await loadSiteDetails(id, { notifySuccess: false });
-          }
-        } catch {
-          /* transient poll errors ignored */
-        }
-      };
-      void pollOnce();
-      recrawlPollRef.current = setInterval(() => {
-        void pollOnce();
-      }, 4000);
+      startCrawlJobPoll(id, 'site');
     } catch (e) {
       console.error(e);
       setRecrawlBusy(false);
       toast.error('Could not start recrawl', { id: 'site-recrawl-err', duration: 4000 });
+    }
+  };
+
+  const handleRecrawlPage = async (page: Page) => {
+    if (!siteId || recrawlBusy) return;
+    const sid = parseInt(siteId, 10);
+    if (Number.isNaN(sid) || !page?.id) return;
+    stopRecrawlPoll();
+    setRecrawlBusy(true);
+    try {
+      await apiService.refreshPageCrawl(sid, page.id);
+      toast.success('Page recrawl started — fetching this URL only', {
+        id: 'page-recrawl-start',
+        duration: 3500,
+      });
+      startCrawlJobPoll(sid, 'page');
+    } catch (e) {
+      console.error(e);
+      setRecrawlBusy(false);
+      toast.error('Could not start page recrawl', { id: 'page-recrawl-err', duration: 4000 });
+    }
+  };
+
+  const handleAskDeletePage = (page: Page) => {
+    setPageToDelete(page);
+    setPageDeleteDialogOpen(true);
+  };
+
+  const handleConfirmDeletePage = async () => {
+    if (!pageToDelete?.id || !siteId) return;
+    const sid = parseInt(siteId, 10);
+    if (Number.isNaN(sid)) return;
+    setDeletingPage(true);
+    try {
+      await apiService.deletePage(pageToDelete.id, sid);
+      toast.success('Page removed');
+      setPageDeleteDialogOpen(false);
+      setPageToDelete(null);
+      if (selectedPage?.id === pageToDelete.id) {
+        setSelectedPage(null);
+      }
+      await loadSiteDetails(sid, { notifySuccess: false });
+    } catch {
+      toast.error('Failed to delete page');
+    } finally {
+      setDeletingPage(false);
     }
   };
 
@@ -703,13 +776,101 @@ const SiteDetailPage = () => {
   // Check if a page is expanded
   const isPageExpanded = (pageId: number) => expandedPageIds.includes(pageId);
 
+  const handleConfirmDeleteSite = async () => {
+    if (!site) return;
+    setDeletingSite(true);
+    try {
+      await apiService.deleteSite(site.id);
+      toast.success('Site deleted');
+      setDeleteDialogOpen(false);
+      navigate('/sites');
+    } catch {
+      toast.error('Failed to delete site');
+    } finally {
+      setDeletingSite(false);
+    }
+  };
+
   return (
     <div className="max-w-4xl mx-auto px-4">
-      <PageHeader
-        title={site ? site.name : 'Site details'}
-        subtitle={site?.url ? site.url : undefined}
-        backTo="/sites"
-      />
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between mb-6">
+        <div className="min-w-0 flex-1">
+          <PageHeader
+            title={site ? site.name : 'Site details'}
+            subtitle={site?.url ? site.url : undefined}
+            backTo="/sites"
+            className="mb-0"
+          />
+        </div>
+        {site ? (
+          <Button
+            type="button"
+            variant="destructive"
+            size="sm"
+            className="shrink-0"
+            onClick={() => setDeleteDialogOpen(true)}
+          >
+            Delete site
+          </Button>
+        ) : null}
+      </div>
+
+      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete this site?</DialogTitle>
+            <DialogDescription>
+              All pages, chunks, and crawl jobs for this site will be removed. This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setDeleteDialogOpen(false)} disabled={deletingSite}>
+              Cancel
+            </Button>
+            <Button type="button" variant="destructive" onClick={handleConfirmDeleteSite} disabled={deletingSite}>
+              {deletingSite ? 'Deleting…' : 'Delete'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={pageDeleteDialogOpen}
+        onOpenChange={open => {
+          setPageDeleteDialogOpen(open);
+          if (!open) setPageToDelete(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete this page?</DialogTitle>
+            <DialogDescription>
+              This removes the page and all of its chunks from the index. This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setPageDeleteDialogOpen(false);
+                setPageToDelete(null);
+              }}
+              disabled={deletingPage}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={() => void handleConfirmDeletePage()}
+              disabled={deletingPage}
+            >
+              {deletingPage ? 'Deleting…' : 'Delete'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {isLoading ? (
         <div className="flex justify-center items-center h-64">
@@ -1148,6 +1309,8 @@ const SiteDetailPage = () => {
                       isExpanded={isExpanded}
                       onToggleExpand={togglePageExpanded}
                       showDebug={showDebug && index < 3}
+                      onRecrawlPage={recrawlBusy ? undefined : handleRecrawlPage}
+                      onDeletePage={handleAskDeletePage}
                     />
                   );
                 })}

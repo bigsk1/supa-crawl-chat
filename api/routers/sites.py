@@ -1,10 +1,16 @@
-from fastapi import APIRouter, Query, HTTPException, status, Path
+from fastapi import APIRouter, Query, HTTPException, status, Path, Response, Request
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
+
+from app_logging import get_audit_logger, get_logger
+from api.supa_auth import get_client_ip
 
 # Import from main project
 from crawler import WebCrawler
 from db_client import SupabaseClient
+
+logger = get_logger(__name__)
+audit = get_audit_logger()
 
 # Create router
 router = APIRouter()
@@ -176,6 +182,46 @@ async def get_site(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error getting site: {str(e)}"
         )
+
+
+@router.delete("/{site_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_site(
+    request: Request,
+    site_id: int = Path(..., description="The ID of the site to delete"),
+):
+    """
+    Delete a site and all of its pages, chunks, and crawl jobs (database CASCADE).
+    """
+    try:
+        db_client = SupabaseClient()
+        site = db_client.get_site_by_id(site_id)
+        if not site:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Site with ID {site_id} not found",
+            )
+        sname = site.get("name") or ""
+        surl = site.get("url") or ""
+        deleted = db_client.delete_site(site_id)
+        if not deleted:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Site with ID {site_id} not found",
+            )
+        ip = get_client_ip(request) or "unknown"
+        msg = "site_deleted site_id=%s name=%r url=%r client_ip=%s"
+        args = (site_id, sname, surl, ip)
+        audit.info(msg, *args)
+        logger.info(msg, *args)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error deleting site: {str(e)}",
+        )
+
 
 @router.get("/{site_id}/pages", response_model=PageList)
 async def get_site_pages(

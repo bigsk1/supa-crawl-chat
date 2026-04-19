@@ -1,14 +1,20 @@
 import datetime
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urldefrag
 
-from fastapi import APIRouter, BackgroundTasks, Body, HTTPException, Path, status
+from fastapi import APIRouter, BackgroundTasks, Body, HTTPException, Path, Request, status
 from pydantic import BaseModel, Field, field_validator
 
-from app_logging import attach_crawl_job_logger, detach_crawl_job_logger
+from app_logging import attach_crawl_job_logger, detach_crawl_job_logger, get_audit_logger, get_logger
+from api.supa_auth import get_client_ip
 from crawler import WebCrawler
 from db_client import SupabaseClient
 from security_utils import UnsafeURL, validate_fetch_url
+
+
+logger = get_logger(__name__)
+audit = get_audit_logger()
 
 
 router = APIRouter()
@@ -270,6 +276,122 @@ def crawl_in_background(
             detach_crawl_job_logger(jlog, jfh)
 
 
+def _resolve_single_page_refresh_url(
+    db: SupabaseClient, site_id: int, page_id: int
+) -> Tuple[str, Optional[int]]:
+    """Return (validated fetch URL, parent page id when *page_id* is a chunk)."""
+    page = db.get_page_by_id(page_id)
+    if not page or page.get("site_id") != site_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Page not found for this site",
+        )
+    if page.get("is_chunk"):
+        parent_id = page.get("parent_id")
+        if not parent_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Chunk row has no parent_id",
+            )
+        parent = db.get_page_by_id(int(parent_id))
+        if not parent or parent.get("site_id") != site_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid parent page for chunk",
+            )
+        raw = parent.get("url") or ""
+        base, _ = urldefrag(str(raw))
+        try:
+            return validate_fetch_url(base, purpose="single page refresh"), int(parent_id)
+        except UnsafeURL as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    raw = page.get("url") or ""
+    base, _ = urldefrag(str(raw))
+    try:
+        return validate_fetch_url(base, purpose="single page refresh"), None
+    except UnsafeURL as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+def single_page_crawl_in_background(
+    site_id: int,
+    page_id: int,
+    refresh_url: str,
+    job_id: Optional[int],
+    advanced_options: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Background worker: crawl one URL and merge into *site_id* (same job row as full-site crawls)."""
+    crawler: Optional[WebCrawler] = None
+    jlog: Optional[logging.Logger] = None
+    jfh: Optional[logging.Handler] = None
+    try:
+        if job_id:
+            jlog, jfh, crawl_log_path = attach_crawl_job_logger(job_id, site_id)
+            jlog.info(
+                "single_page_crawl_started job_id=%s site_id=%s page_id=%s url=%s log_file=%s",
+                job_id,
+                site_id,
+                page_id,
+                refresh_url,
+                crawl_log_path,
+            )
+
+        crawler = WebCrawler()
+        if job_id:
+            crawler.db_client.update_crawl_job(job_id, status="running", error=None)
+
+        stats = crawler.refresh_single_page_at_url(
+            site_id, refresh_url, advanced_options=advanced_options or {}
+        )
+        parent_n = int(stats.get("parent_pages", 0))
+        chunk_n = int(stats.get("chunks", 0))
+
+        if job_id:
+            crawler.db_client.update_crawl_job(
+                job_id,
+                status="completed",
+                pages_found=parent_n,
+                pages_crawled=parent_n,
+                chunks_created=chunk_n,
+                finished_at=datetime.datetime.now(datetime.timezone.utc),
+            )
+
+        site_row = crawler.db_client.get_site_by_id(site_id) or {}
+        if jlog:
+            jlog.info(
+                "single_page_crawl_completed job_id=%s site_id=%s page_id=%s parents=%s chunks=%s site_updated_at_db=%s",
+                job_id,
+                site_id,
+                page_id,
+                parent_n,
+                chunk_n,
+                site_row.get("updated_at"),
+            )
+    except Exception as exc:
+        if jlog:
+            jlog.exception(
+                "single_page_crawl_failed job_id=%s site_id=%s page_id=%s",
+                job_id,
+                site_id,
+                page_id,
+            )
+        logger.exception("single_page_crawl_failed: %s", exc)
+        if job_id:
+            try:
+                db_client = crawler.db_client if crawler else WebCrawler().db_client
+                db_client.update_crawl_job(
+                    job_id,
+                    status="failed",
+                    error=str(exc),
+                    finished_at=datetime.datetime.now(datetime.timezone.utc),
+                )
+            except Exception:
+                pass
+    finally:
+        if jlog is not None and jfh is not None:
+            detach_crawl_job_logger(jlog, jfh)
+
+
 @router.post("", response_model=CrawlResponse)
 async def crawl(
     background_tasks: BackgroundTasks,
@@ -394,6 +516,78 @@ async def crawl_status(site_id: int = Path(..., description="The ID of the site"
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error getting crawl status: {exc}",
+        )
+
+
+@router.post("/refresh/{site_id}/pages/{page_id}", response_model=CrawlResponse)
+async def refresh_single_page(
+    background_tasks: BackgroundTasks,
+    request: Request,
+    site_id: int = Path(..., description="The ID of the site"),
+    page_id: int = Path(..., description="Parent page ID, or a chunk ID (recrawls the parent URL)"),
+    refresh_data: RefreshRequest = Body(default_factory=RefreshRequest),
+):
+    """
+    Re-fetch one page URL via Crawl4AI (no site-wide link crawl) and merge into this site.
+    """
+    try:
+        crawler = WebCrawler()
+        db = crawler.db_client
+        site = db.get_site_by_id(site_id)
+        if not site:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Site with ID {site_id} not found",
+            )
+
+        refresh_url, _parent_for_chunk = _resolve_single_page_refresh_url(db, site_id, page_id)
+        advanced_options = _advanced_options(refresh_data)
+        job_options = refresh_data.model_dump()
+        job_options.update({"refresh": True, "single_page": True, "page_id": page_id})
+        job_id = db.create_crawl_job(site_id, refresh_url, job_options)
+
+        background_tasks.add_task(
+            single_page_crawl_in_background,
+            site_id,
+            page_id,
+            refresh_url,
+            job_id,
+            advanced_options,
+        )
+
+        ip = get_client_ip(request) or "unknown"
+        audit.info(
+            "page_recrawl_queued site_id=%s page_id=%s url=%r client_ip=%s job_id=%s",
+            site_id,
+            page_id,
+            refresh_url,
+            ip,
+            job_id,
+        )
+        logger.info(
+            "page_recrawl_queued site_id=%s page_id=%s url=%r client_ip=%s job_id=%s",
+            site_id,
+            page_id,
+            refresh_url,
+            ip,
+            job_id,
+        )
+
+        return CrawlResponse(
+            site_id=site_id,
+            site_name=site.get("name", ""),
+            url=refresh_url,
+            message="Single-page refresh started",
+            status="in_progress",
+            job_id=job_id,
+            next_steps=_next_steps(site_id),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error starting single-page refresh: {exc}",
         )
 
 

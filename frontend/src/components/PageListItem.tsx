@@ -10,6 +10,10 @@ interface PageListItemProps {
   isExpanded: boolean;
   onToggleExpand: (pageId: number) => void;
   showDebug?: boolean;
+  /** Re-fetch this page URL only (omit while a crawl is already in progress). */
+  onRecrawlPage?: (page: Page) => void;
+  /** Remove this page (and its chunks) from the index. */
+  onDeletePage?: (page: Page) => void;
 }
 
 const PageListItem: React.FC<PageListItemProps> = ({
@@ -19,7 +23,9 @@ const PageListItem: React.FC<PageListItemProps> = ({
   onPageClick,
   isExpanded,
   onToggleExpand,
-  showDebug = false
+  showDebug = false,
+  onRecrawlPage,
+  onDeletePage,
 }) => {
   const hasChunks = pageChunks.length > 0;
   
@@ -71,9 +77,9 @@ const PageListItem: React.FC<PageListItemProps> = ({
             : 'bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700'
         }`}
       >
-        <div className="flex justify-between items-start">
-          <div 
-            className="flex-1 cursor-pointer"
+        <div className="flex justify-between items-start gap-3">
+          <div
+            className="flex-1 cursor-pointer min-w-0"
             onClick={() => onPageClick(page)}
           >
             <div className="font-medium text-lg mb-1">{page.title || 'Untitled Page'}</div>
@@ -121,6 +127,33 @@ const PageListItem: React.FC<PageListItemProps> = ({
               )}
             </div>
           </div>
+          {(onRecrawlPage || onDeletePage) && (
+            <div
+              className="flex flex-shrink-0 flex-col sm:flex-row gap-1"
+              onClick={e => e.stopPropagation()}
+            >
+              {onRecrawlPage && (
+                <button
+                  type="button"
+                  title="Re-fetch this URL only (POST /api/crawl/refresh/…/pages/…)"
+                  onClick={() => onRecrawlPage(page)}
+                  className="text-xs px-2 py-1 rounded-md bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-200 dark:hover:bg-emerald-800/50 whitespace-nowrap"
+                >
+                  Recrawl page
+                </button>
+              )}
+              {onDeletePage && (
+                <button
+                  type="button"
+                  title="Remove this page from the index"
+                  onClick={() => onDeletePage(page)}
+                  className="text-xs px-2 py-1 rounded-md bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/50 whitespace-nowrap"
+                >
+                  Delete
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </div>
       

@@ -6,6 +6,10 @@ Environment:
   LOG_LEVEL     — root level: DEBUG, INFO, WARNING, ERROR (default: INFO)
   LOG_FILE      — filename inside APP_LOG_DIR (default: app.log)
 
+  AUDIT_LOG_ENABLED — if false/off, no separate audit file (default: true)
+  AUDIT_LOG_FILE    — filename inside APP_LOG_DIR (default: audit.log)
+  AUDIT_LOG_MAX_BYTES / AUDIT_LOG_BACKUP_COUNT — rotation for the audit file
+
 Rotation (pick one):
 
   • Size-based (default): LOG_MAX_BYTES + LOG_BACKUP_COUNT — no time limit, caps total disk
@@ -31,6 +35,33 @@ from pathlib import Path
 _CONFIGURED = False
 
 _DEFAULT_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+_AUDIT_LOGGER_NAME = "supa_audit"
+
+
+def _configure_audit_file_logger(base: Path, fmt: logging.Formatter) -> None:
+    """Separate rotating file for operator actions (deletes, etc.); not mixed with noisy httpx lines."""
+    raw = os.getenv("AUDIT_LOG_ENABLED", "true").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return
+    audit = logging.getLogger(_AUDIT_LOGGER_NAME)
+    if audit.handlers:
+        return
+    fname = (os.getenv("AUDIT_LOG_FILE") or "audit.log").strip() or "audit.log"
+    audit_path = base / fname
+    try:
+        fh = RotatingFileHandler(
+            audit_path,
+            maxBytes=int(os.getenv("AUDIT_LOG_MAX_BYTES", str(5 * 1024 * 1024))),
+            backupCount=int(os.getenv("AUDIT_LOG_BACKUP_COUNT", "5")),
+            encoding="utf-8",
+        )
+        fh.setFormatter(fmt)
+        fh.setLevel(logging.INFO)
+        audit.setLevel(logging.INFO)
+        audit.addHandler(fh)
+        audit.propagate = False
+    except OSError as exc:
+        sys.stderr.write(f"[app_logging] Cannot open audit log {audit_path}: {exc}\n")
 _DATEFMT = "%Y-%m-%d %H:%M:%S"
 
 
@@ -122,6 +153,8 @@ def configure_logging(
         sh.setLevel(level_val)
         root.addHandler(sh)
 
+    _configure_audit_file_logger(base, fmt)
+
     _CONFIGURED = True
     logging.captureWarnings(True)
     _quiet_noisy_third_party_loggers()
@@ -212,3 +245,8 @@ def _resolve_level(level: int | str | None) -> int:
 def get_logger(name: str) -> logging.Logger:
     """Named logger (propagates to root handlers after configure_logging())."""
     return logging.getLogger(name)
+
+
+def get_audit_logger() -> logging.Logger:
+    """Structured operator/audit lines (log/audit.log by default). Call after configure_logging()."""
+    return logging.getLogger(_AUDIT_LOGGER_NAME)

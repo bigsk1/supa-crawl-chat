@@ -50,6 +50,17 @@ When **`WEBUI_PASSWORD`** is set, the React app obtains a JWT and sends **`Autho
 
 ---
 
+## Deleting a site
+
+`DELETE /api/sites/{site_id}` removes the site row; **`crawl_pages`** (and chunks) and **`crawl_jobs`** are removed by **ON DELETE CASCADE** in the schema. Requires the same auth as other `/api` routes when enabled. The web UI exposes this on **Sites** (trash icon) and on each **site detail** page.
+
+### Single page
+
+- **`DELETE /api/pages/{page_id}`** removes one **`crawl_pages`** row. Deleting a **parent** page removes its **chunks** (CASCADE). Deleting a **chunk** removes only that chunk. Audit lines go to **`log/audit.log`** (and **`app.log`**) when enabled.
+- **`POST /api/crawl/refresh/{site_id}/pages/{page_id}`** re-fetches **only** that page’s URL via Crawl4AI (**no** whole-site crawl), then merges into the site. If **`page_id`** is a **chunk**, the **parent** URL is used. Poll **`GET /api/crawl/status/{site_id}`** like a full refresh. The site detail UI exposes **Recrawl page** and **Delete** on each listed page.
+
+---
+
 ## Rate limiting
 
 - **`GET /api/query`** is rate-limited per client IP (in-process). **`QUERY_RATE_LIMIT_PER_MINUTE`** (default **30**); set to **0** to disable.
@@ -73,6 +84,9 @@ When **`WEBUI_PASSWORD`** is set, the React app obtains a JWT and sends **`Autho
 | `WEBUI_TOKEN_EXPIRY_DAYS` | JWT lifetime. |
 | `API_CORS_ORIGINS` | Comma-separated origins; empty allows permissive CORS for dev. |
 | `API_ACCESS_LOG` | If true, log one line per request (`api_http …`) except skipped paths. |
+| `AUDIT_LOG_ENABLED` | If true (default), write high-signal actions to a separate file under `APP_LOG_DIR` (default `audit.log`). |
+| `AUDIT_LOG_FILE` | Audit log filename (inside `APP_LOG_DIR`). |
+| `AUDIT_LOG_MAX_BYTES` / `AUDIT_LOG_BACKUP_COUNT` | Size-based rotation for the audit file. |
 
 Copy **`/.env.example`** for full project variables (crawl, chat, Brave, logging, etc.).
 

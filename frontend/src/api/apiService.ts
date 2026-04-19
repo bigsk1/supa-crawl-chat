@@ -18,6 +18,28 @@ interface CacheEntry {
 
 const apiCache: Record<string, CacheEntry> = {};
 
+/** Drop cached GET responses whose URL path matches (fixes stale list after site delete / crawl). */
+export function invalidateApiCacheUrlPrefix(prefix: string): void {
+  for (const key of Object.keys(apiCache)) {
+    if (key.includes(prefix)) {
+      delete apiCache[key];
+    }
+  }
+}
+
+function invalidateSitesRelatedCache(): void {
+  invalidateApiCacheUrlPrefix('/sites');
+}
+
+/** After page delete/recrawl, drop cached site detail and page GETs. */
+function invalidateSiteAndPagesCache(siteId?: number): void {
+  invalidateSitesRelatedCache();
+  invalidateApiCacheUrlPrefix('/pages');
+  if (siteId != null && !Number.isNaN(siteId)) {
+    invalidateApiCacheUrlPrefix(`/sites/${siteId}`);
+  }
+}
+
 // Cache expiry times (in milliseconds)
 const CACHE_EXPIRY = {
   default: 60 * 1000, // 1 minute
@@ -121,6 +143,19 @@ apiClient.interceptors.response.use(
         timestamp: Date.now(),
         expiry: Date.now() + expiryTime
       };
+    }
+
+    // Mutations: list views must not stay stale (GET /sites was cached up to 5 min).
+    const method = response.config.method?.toLowerCase();
+    const url = response.config.url || '';
+    if (method === 'delete' && url.includes('/sites')) {
+      invalidateSitesRelatedCache();
+    }
+    if (method === 'delete' && url.includes('/pages/')) {
+      invalidateSiteAndPagesCache();
+    }
+    if (method === 'post' && (url.startsWith('/crawl') || url.includes('/crawl'))) {
+      invalidateSitesRelatedCache();
     }
 
     return response;
@@ -351,6 +386,16 @@ export const apiService = {
     }
   },
 
+  deleteSite: async (siteId: number): Promise<void> => {
+    await apiClient.delete(`/sites/${siteId}`);
+    invalidateSitesRelatedCache();
+  },
+
+  deletePage: async (pageId: number, siteId?: number): Promise<void> => {
+    await apiClient.delete(`/pages/${pageId}`);
+    invalidateSiteAndPagesCache(siteId);
+  },
+
   getSitePages: async (siteId: number, includeChunks: boolean = false): Promise<Page[] | { pages: Page[] }> => {
     try {
       const response = await apiClient.get(`/sites/${siteId}/pages`, {
@@ -421,6 +466,16 @@ export const apiService = {
   /** Queue a refresh crawl for an existing site (POST /api/crawl/refresh/{site_id}). */
   refreshSiteCrawl: async (siteId: number): Promise<CrawlResponse> => {
     const response = await apiClient.post<CrawlResponse>(`/crawl/refresh/${siteId}`, {});
+    return response.data;
+  },
+
+  /** Re-fetch one page URL only (POST /api/crawl/refresh/{site_id}/pages/{page_id}). */
+  refreshPageCrawl: async (siteId: number, pageId: number): Promise<CrawlResponse> => {
+    const response = await apiClient.post<CrawlResponse>(
+      `/crawl/refresh/${siteId}/pages/${pageId}`,
+      {}
+    );
+    invalidateSiteAndPagesCache(siteId);
     return response.data;
   },
 

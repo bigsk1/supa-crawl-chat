@@ -170,6 +170,7 @@ async def root():
                 "routes": [
                     {"method": "POST", "path": "/api/crawl", "note": "Start crawl (body: url, site_name, …)"},
                     {"method": "GET", "path": "/api/crawl/status/{site_id}", "note": "Crawl / site progress"},
+                    {"method": "POST", "path": "/api/crawl/refresh/{site_id}/pages/{page_id}", "note": "Re-fetch one page URL only"},
                     {"method": "POST", "path": "/api/crawl/refresh/{site_id}", "note": "Re-crawl existing site"},
                     {"method": "POST", "path": "/api/crawl/refresh-stale", "note": "Batch refresh stale sites (operator)"},
                 ],
@@ -187,6 +188,7 @@ async def root():
                 "routes": [
                     {"method": "GET", "path": "/api/pages/{page_id}", "note": "Single page (content_chars, full)"},
                     {"method": "GET", "path": "/api/pages/{page_id}/chunks", "note": "Chunks for parent page"},
+                    {"method": "DELETE", "path": "/api/pages/{page_id}", "note": "Delete one page or chunk row"},
                     {"method": "POST", "path": "/api/pages/maintenance/deduplicate", "note": "Chunk cleanup (operator)"},
                 ],
             },

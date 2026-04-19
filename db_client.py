@@ -1041,6 +1041,42 @@ class SupabaseClient:
             if conn:
                 conn.close()
 
+    def delete_site(self, site_id: int) -> bool:
+        """Delete a site; related crawl_pages, chunks, and crawl_jobs cascade (schema FK)."""
+        self.ensure_runtime_schema()
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM crawl_sites WHERE id = %s RETURNING id", (site_id,))
+                row = cur.fetchone()
+            conn.commit()
+        return row is not None
+
+    def delete_page_by_id(self, page_id: int) -> Optional[Dict[str, Any]]:
+        """Delete one crawl_pages row. Deleting a parent page removes its chunks (ON DELETE CASCADE)."""
+        self.ensure_runtime_schema()
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM crawl_pages
+                    WHERE id = %s
+                    RETURNING id, site_id, url, title, is_chunk, parent_id
+                    """,
+                    (page_id,),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "site_id": row[1],
+            "url": row[2],
+            "title": row[3],
+            "is_chunk": row[4],
+            "parent_id": row[5],
+        }
+
     def create_crawl_job(self, site_id: int, url: str, options: Optional[Dict[str, Any]] = None) -> int:
         """Create a durable crawl job row."""
         self.ensure_runtime_schema()

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Query, HTTPException, status, Path, Depends
+from fastapi import APIRouter, Query, HTTPException, status, Path, Depends, Request, Response
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 
@@ -6,7 +6,12 @@ from pydantic import BaseModel
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from app_logging import get_audit_logger, get_logger
+from api.supa_auth import get_client_ip
 from db_client import SupabaseClient
+
+logger = get_logger(__name__)
+audit = get_audit_logger()
 
 # Create a function to get the db client
 def get_db_client():
@@ -66,6 +71,41 @@ async def deduplicate_chunks(db_client: SupabaseClient = Depends(get_db_client))
     except Exception as e:
         print(f"Error in deduplicate_chunks: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@router.delete("/{page_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_page(
+    request: Request,
+    page_id: int = Path(..., description="Page ID (deleting a parent removes its chunks)"),
+    db_client: SupabaseClient = Depends(get_db_client),
+):
+    """
+    Delete one crawl_pages row. Deleting a **parent** page removes its chunks (CASCADE).
+    Deleting a **chunk** removes only that chunk.
+    """
+    try:
+        deleted = db_client.delete_page_by_id(page_id)
+        if not deleted:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Page with ID {page_id} not found")
+        ip = get_client_ip(request) or "unknown"
+        msg = (
+            "page_deleted page_id=%s site_id=%s is_chunk=%s url=%r client_ip=%s"
+        )
+        args = (
+            deleted["id"],
+            deleted["site_id"],
+            deleted.get("is_chunk"),
+            (deleted.get("url") or "")[:500],
+            ip,
+        )
+        audit.info(msg, *args)
+        logger.info(msg, *args)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
 
 @router.get("/{page_id}", response_model=Optional[Page])
 async def get_page_by_id(
