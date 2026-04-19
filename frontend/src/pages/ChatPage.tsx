@@ -17,6 +17,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { MessageSquare, Plus, Trash2, Edit, RefreshCw, Bot, Send, Copy, Check } from 'lucide-react';
 import { createNotification } from '@/utils/notifications';
 import ReactMarkdown from 'react-markdown';
+import { PageHeader } from '@/components/PageHeader';
 
 // Define the session interface
 interface ChatSession {
@@ -240,10 +241,10 @@ const ChatPage = () => {
     }
   }, [sessionId, chatInitialized, activeProfile]); // Remove isLoadingProfiles and isLoadingHistory from dependencies
 
-  // Scroll to bottom when chat history changes
+  // Scroll to bottom when chat history changes or when waiting for the assistant
   useEffect(() => {
     scrollToBottom();
-  }, [chatHistory]);
+  }, [chatHistory, isLoading]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -254,13 +255,14 @@ const ChatPage = () => {
     
     // Check if this is a simple greeting
     const greeting_patterns = [
-      "hi", "hello", "hey", "greetings", "howdy", "hola", 
-      "how are you", "how's it going", "what's up", "sup", 
-      "good morning", "good afternoon", "good evening"
+      'hi', 'hello', 'hey', 'greetings', 'howdy', 'hola',
+      'how are you', "how's it going", 'hows it going', "what's up", 'whats up',
+      'whats going on', "what's going on",
+      'sup', 'good morning', 'good afternoon', 'good evening',
     ];
-    
+
     const clean_message = message.trim().toLowerCase();
-    const is_greeting = greeting_patterns.some(greeting => clean_message.includes(greeting));
+    const is_greeting = greeting_patterns.some((greeting) => clean_message.includes(greeting));
     
     setIsLoading(true);
     
@@ -277,11 +279,12 @@ const ChatPage = () => {
     
     try {
       // Send message to API
+      // Order must match apiWrapper: (message, profile?, user_id?, session_id?)
       const response = await api.sendMessage(
         message,
         activeProfile?.name || undefined,
-        sessionId || undefined,
-        userProfile?.name
+        userProfile?.name || undefined,
+        sessionId || undefined
       );
       
       // Add assistant response to chat history
@@ -653,9 +656,9 @@ const ChatPage = () => {
   return (
     <div className="container mx-auto px-4 py-8">
       <div className="flex flex-col h-[calc(100vh-10rem)]">
-        <div className="flex items-center justify-between mb-4">
-          <h1 className="text-2xl font-bold">Chat</h1>
-          <div className="flex space-x-2">
+        <PageHeader title="Chat" subtitle="RAG-aware assistant using your crawled content" backTo="/" />
+        <div className="flex items-center justify-end mb-4 -mt-2">
+          <div className="flex flex-wrap gap-2 justify-end">
             {/* Session dropdown */}
             <DropdownMenu>
               <TooltipProvider>
@@ -862,13 +865,13 @@ const ChatPage = () => {
         
         <div className="flex-1 flex flex-col bg-[#0f1117] rounded-lg border border-white/[0.05] overflow-hidden">
           <div className="flex-1 overflow-y-auto p-4" ref={chatContainerRef}>
-            {filteredChatHistory.length === 0 ? (
+            {filteredChatHistory.length === 0 && !isLoading ? (
               <div className="flex items-center justify-center h-full">
                 <div className="text-center">
                   <Bot className="mx-auto h-12 w-12 text-muted-foreground" />
                   <h3 className="mt-2 text-lg font-medium">Start a conversation</h3>
                   <p className="text-sm text-muted-foreground">
-                    Ask questions about your crawled sites or any topic you'd like to discuss
+                    Ask questions about your crawled sites or say hi — your session stays in sync with the server.
                   </p>
                 </div>
               </div>
@@ -879,11 +882,32 @@ const ChatPage = () => {
                 </div>
               ))
             )}
+            {isLoading && (
+              <div className="flex gap-3 justify-start mb-4" aria-live="polite" aria-busy="true">
+                <Avatar className="h-8 w-8">
+                  <AvatarFallback>
+                    <Bot size={16} />
+                  </AvatarFallback>
+                </Avatar>
+                <div className="rounded-lg p-3 max-w-[80%] bg-muted border border-white/[0.06]">
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <RefreshCw className="h-4 w-4 animate-spin shrink-0" />
+                    <span>Thinking…</span>
+                  </div>
+                </div>
+              </div>
+            )}
             <div ref={messagesEndRef} />
           </div>
 
           <div className="border-t border-white/[0.05] p-4">
-            <form onSubmit={handleSendMessage} className="flex space-x-2">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                void handleSendMessage();
+              }}
+              className="flex space-x-2"
+            >
               <Textarea
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}

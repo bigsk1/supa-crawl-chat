@@ -10,6 +10,7 @@ import { Separator } from '@/components/ui/separator';
 import PageListItem from '@/components/PageListItem';
 import { createNotification } from '@/utils/notifications';
 import { sanitizeHtml } from '@/lib/sanitize';
+import { PageHeader } from '@/components/PageHeader';
 
 // Add this type definition at the top of the file, after imports
 type FilteredPage = {
@@ -57,9 +58,11 @@ const SiteDetailPage = () => {
   const [showDebug, setShowDebug] = useState(false);
 
   useEffect(() => {
-    if (siteId) {
-      loadSiteDetails(parseInt(siteId));
-    }
+    if (!siteId) return;
+    const id = parseInt(siteId, 10);
+    if (Number.isNaN(id)) return;
+    // Silent by default: visiting /sites/:id should not spam success toasts (incl. Strict Mode double-invoke)
+    void loadSiteDetails(id, { notifySuccess: false });
   }, [siteId]);
 
   useEffect(() => {
@@ -106,7 +109,31 @@ const SiteDetailPage = () => {
     }
   }, [selectedPage, pages, isLoadingContent]);
 
-  const loadSiteDetails = async (siteId: number) => {
+  type LoadSiteOptions = { notifySuccess?: boolean };
+
+  const applyPagesPayload = (siteData: Site, pagesData: unknown) => {
+    let raw = pagesData as any;
+    if (raw && typeof raw === 'object' && 'pages' in raw) {
+      raw = (raw as { pages: unknown }).pages;
+    }
+    const pagesArray: any[] = Array.isArray(raw) ? raw : (raw as any)?.pages ?? [];
+    const processedPages = pagesArray.map((page: any) => ({
+      ...page,
+      is_parent: !page.is_chunk,
+      created_at: page.created_at || null,
+      updated_at: page.updated_at || null,
+    }));
+    setDebugInfo({ site: siteData, pages: pagesData });
+    setPages(processedPages);
+    const parentPages = processedPages.filter((p: any) => !p.is_chunk);
+    const totalPagesCount = Math.ceil(parentPages.length / pageSize);
+    setTotalPages(totalPagesCount > 0 ? totalPagesCount : 1);
+    setCurrentPage(1);
+    return processedPages;
+  };
+
+  const loadSiteDetails = async (siteId: number, options: LoadSiteOptions = {}) => {
+    const notifySuccess = options.notifySuccess === true;
     setIsLoading(true);
     setError(null);
 
@@ -115,120 +142,30 @@ const SiteDetailPage = () => {
       setSite(siteData);
 
       try {
-        // First try the direct API call to get pages with date information
+        let pagesPayload: unknown;
+
         try {
           const response = await axios.get(`/api/sites/${siteId}/pages/`, {
             params: {
               include_chunks: true,
               include_dates: true,
               include_content: false,
-              limit: 1000 // Get more pages to ensure we have all of them
-            }
+              limit: 1000,
+            },
           });
-
-          console.log('Direct API response for pages:', response.data);
-
-          let pagesData = response.data;
-          if (pagesData && typeof pagesData === 'object' && 'pages' in pagesData) {
-            pagesData = pagesData.pages;
-          }
-
-          // Store debug info
-          setDebugInfo({
-            site: siteData,
-            pages: pagesData
-          });
-
-          // Handle both array response and object with pages property
-          let pagesArray = Array.isArray(pagesData) ? pagesData : pagesData.pages;
-
-          // Process pages to ensure they have all required properties
-          const processedPages = pagesArray.map((page: any) => {
-            // Log raw date values for debugging
-            console.log(`Page ${page.id} raw dates:`, {
-              created_at: page.created_at,
-              updated_at: page.updated_at,
-              type_created: typeof page.created_at,
-              type_updated: typeof page.updated_at
-            });
-
-            return {
-              ...page,
-              // Set is_parent flag for pages that are not chunks
-              is_parent: !page.is_chunk,
-              // Ensure dates are properly formatted
-              created_at: page.created_at || null,
-              updated_at: page.updated_at || null
-            };
-          });
-
-          // Log a sample of pages with their date information
-          console.log('Processed pages with dates:', processedPages.slice(0, 3).map((p: any) => ({
-            id: p.id,
-            title: p.title,
-            created_at: p.created_at,
-            updated_at: p.updated_at,
-            is_chunk: p.is_chunk
-          })));
-
-          setPages(processedPages);
-
-          // Count only parent pages for pagination
-          const parentPages = processedPages.filter((p: any) => !p.is_chunk);
-          const totalPagesCount = Math.ceil(parentPages.length / pageSize);
-          setTotalPages(totalPagesCount > 0 ? totalPagesCount : 1);
-
-          // Reset current page to 1 when refreshing
-          setCurrentPage(1);
-
-          // Show success message
-          createNotification('Success', 'Data refreshed successfully', 'success', true);
+          pagesPayload = response.data;
         } catch (directError) {
           console.error('Error with direct API call:', directError);
+          pagesPayload = await apiService.getSitePages(siteId, true);
+        }
 
-          // Fall back to the regular API service
-          const pagesData = await apiService.getSitePages(siteId, true);
-          console.log('Pages data from API service:', pagesData);
+        applyPagesPayload(siteData, pagesPayload);
 
-          // Store debug info
-          setDebugInfo({
-            site: siteData,
-            pages: pagesData
+        if (notifySuccess) {
+          toast.success('Site data updated', {
+            id: 'site-detail-refresh-success',
+            duration: 2200,
           });
-
-          // Handle both array response and object with pages property
-          let pagesArray = Array.isArray(pagesData) ? pagesData : pagesData.pages;
-
-          // Process pages to ensure they have all required properties
-          const processedPages = pagesArray.map((page: any) => ({
-            ...page,
-            // Set is_parent flag for pages that are not chunks
-            is_parent: !page.is_chunk,
-            // Ensure dates are properly formatted
-            created_at: page.created_at || null,
-            updated_at: page.updated_at || null
-          }));
-
-          console.log('Processed pages with dates:', processedPages.slice(0, 3).map((p: any) => ({
-            id: p.id,
-            title: p.title,
-            created_at: p.created_at,
-            updated_at: p.updated_at,
-            is_chunk: p.is_chunk
-          })));
-
-          setPages(processedPages);
-
-          // Count only parent pages for pagination
-          const parentPages = processedPages.filter((p: any) => !p.is_chunk);
-          const totalPagesCount = Math.ceil(parentPages.length / pageSize);
-          setTotalPages(totalPagesCount > 0 ? totalPagesCount : 1);
-
-          // Reset current page to 1 when refreshing
-          setCurrentPage(1);
-
-          // Show success message
-          createNotification('Success', 'Data refreshed successfully', 'success', true);
         }
       } catch (pagesError) {
         console.error('Error fetching site pages:', pagesError);
@@ -694,9 +631,11 @@ const SiteDetailPage = () => {
 
   return (
     <div className="max-w-4xl mx-auto px-4">
-      <h1 className="text-2xl font-bold mb-6">
-        {site ? site.name : 'Site Details'}
-      </h1>
+      <PageHeader
+        title={site ? site.name : 'Site details'}
+        subtitle={site?.url ? site.url : undefined}
+        backTo="/sites"
+      />
 
       {isLoading ? (
         <div className="flex justify-center items-center h-64">
@@ -993,7 +932,7 @@ const SiteDetailPage = () => {
               </button>
 
               <button
-                onClick={() => siteId && loadSiteDetails(parseInt(siteId))}
+                onClick={() => siteId && loadSiteDetails(parseInt(siteId), { notifySuccess: true })}
                 className="text-xs bg-blue-100 dark:bg-blue-800 text-blue-700 dark:text-blue-300 hover:bg-blue-200 dark:hover:bg-blue-700 px-3 py-1 rounded-md flex items-center"
                 title="Refresh site and pages data"
               >
@@ -1022,7 +961,7 @@ const SiteDetailPage = () => {
                 Pages ({filteredPages.length} of {pages.filter(p => !p.is_chunk).length})
               </h2>
               <button
-                onClick={() => siteId && loadSiteDetails(parseInt(siteId))}
+                onClick={() => siteId && loadSiteDetails(parseInt(siteId), { notifySuccess: true })}
                 className="ml-2 text-xs bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 p-1 rounded-full flex items-center"
                 title="Refresh pages data"
               >

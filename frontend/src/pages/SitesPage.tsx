@@ -7,6 +7,7 @@ import axios from 'axios';
 import { Button } from '@/components/ui/button';
 import { RefreshCw } from 'lucide-react';
 import { createNotification } from '@/utils/notifications';
+import { PageHeader } from '@/components/PageHeader';
 
 const SitesPage = () => {
   const [sites, setSites] = useState<Site[]>([]);
@@ -147,7 +148,7 @@ const SitesPage = () => {
     setRefreshing(true);
     try {
       await loadSites(true); // Pass true to bypass cache
-      createNotification('Success', 'Sites list refreshed', 'success', true);
+      toast.success('Sites updated', { id: 'sites-list-refresh', duration: 2200 });
     } catch (error) {
       console.error('Error refreshing sites:', error);
       toast.error('Failed to refresh sites');
@@ -165,9 +166,9 @@ const SitesPage = () => {
         </div>
       )}
       
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold">Sites</h1>
-        <div className="flex gap-2">
+      <div className="flex flex-col gap-4 mb-6">
+        <PageHeader title="Sites" subtitle="Crawled sites and page counts" backTo="/" />
+        <div className="flex justify-end gap-2 flex-wrap">
           <Button 
             variant="outline" 
             size="sm"

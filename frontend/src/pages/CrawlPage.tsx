@@ -8,6 +8,7 @@ import { toast } from 'react-hot-toast';
 import axios from 'axios';
 import { Eye, Search, RefreshCw } from 'lucide-react';
 import AdvancedCrawlOptions from '@/components/AdvancedCrawlOptions';
+import { PageHeader } from '@/components/PageHeader';
 
 const DebugPanel = ({ isOpen, onClose, data }: { isOpen: boolean; onClose: () => void; data: any }) => {
   if (!isOpen) return null;
@@ -176,10 +177,10 @@ const CrawlPage = () => {
     setRefreshing(true);
     try {
       await loadActiveCrawls(true); // Pass true to bypass cache
-      createNotification('Success', 'Crawl list refreshed', 'success', true);
+      toast.success('Crawl list updated', { id: 'crawl-list-refresh', duration: 2200 });
     } catch (error) {
       console.error('Error refreshing crawls:', error);
-      createNotification('Error', 'Failed to refresh crawls', 'error', true);
+      toast.error('Failed to refresh crawls');
     } finally {
       setRefreshing(false);
     }
@@ -367,7 +368,7 @@ const CrawlPage = () => {
 
   return (
     <div className="container mx-auto px-4 py-8">
-      <h1 className="text-2xl font-bold mb-6">Crawl a Website</h1>
+      <PageHeader title="Crawl a Website" subtitle="Start a crawl and monitor progress" backTo="/" />
       
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         <div>

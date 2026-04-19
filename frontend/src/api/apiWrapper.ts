@@ -113,17 +113,18 @@ export const api = {
   ),
 
   // Chat methods
+  /** POST /api/chat — body fields: message, profile, user_id, session_id (must match backend names). */
   sendMessage: async (
     message: string,
     profile?: string,
     user_id?: string,
     session_id?: string
   ): Promise<any> => {
-    // Check if this is a simple greeting
     const greeting_patterns = [
-      "hi", "hello", "hey", "greetings", "howdy", "hola",
-      "how are you", "how's it going", "what's up", "sup",
-      "good morning", "good afternoon", "good evening"
+      'hi', 'hello', 'hey', 'greetings', 'howdy', 'hola',
+      'how are you', "how's it going", 'hows it going', "what's up", 'whats up',
+      'whats going on', "what's going on",
+      'sup', 'good morning', 'good afternoon', 'good evening',
     ];
 
     const clean_message = message.trim().toLowerCase();

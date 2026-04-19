@@ -110,21 +110,9 @@ export function dispatchNotification(notification: Notification) {
   if (notificationCenterAddFn) {
     notificationCenterAddFn(notification);
   }
-  
-  // Show toast if needed and notifications are not muted
-  if (!notificationsMuted) {
-    if (notification.type === 'error') {
-      toast.error(`${notification.title}: ${notification.message}`, {
-        id: notification.id,
-        duration: notification.duration || 4000
-      });
-    } else if (notification.type === 'success') {
-      toast.success(`${notification.title}: ${notification.message}`, {
-        id: notification.id,
-        duration: notification.duration || 3000
-      });
-    }
-  }
+
+  // Toasts are not shown here — trackApiCall and createNotification already emit toasts when
+  // appropriate. Duplicating here caused double popups for the same event.
 }
 
 // Track an API call and dispatch notifications for its lifecycle

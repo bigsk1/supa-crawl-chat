@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { apiService, SearchResult } from '@/api/apiService';
 import ReactMarkdown from 'react-markdown';
 import { sanitizeHtml } from '@/lib/sanitize';
+import { PageHeader } from '@/components/PageHeader';
 
 const SearchPage = () => {
   const [query, setQuery] = useState('');
@@ -185,7 +186,7 @@ const SearchPage = () => {
 
   return (
     <div className="max-w-4xl mx-auto px-4">
-      <h1 className="text-2xl font-bold mb-6">Semantic Search</h1>
+      <PageHeader title="Semantic Search" subtitle="Vector and text search over crawled pages" backTo="/" />
 
       {selectedResult ? (
         <div>

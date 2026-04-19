@@ -123,7 +123,7 @@ async def chat(
     model: Optional[str] = Query(None, description="The model to use for chat"),
     result_limit: Optional[int] = Query(None, description="Maximum number of search results"),
     similarity_threshold: Optional[float] = Query(None, description="Similarity threshold (0-1)"),
-    include_context: bool = Query(False, description="Include search context in the response"),
+    include_context: bool = Query(True, description="When true, run vector search for RAG context (skipped for greetings)"),
     include_history: bool = Query(False, description="Include conversation history in the response"),
 ):
     """
@@ -157,36 +157,35 @@ async def chat(
             print(f"Error loading conversation history: {history_error}")
             is_first_message = True
             
-        # Get search context first
-        try:
-            context = chat_bot.search_for_context(chat_request.message)
-        except Exception as search_error:
-            print(f"Error in search_for_context: {search_error}")
-            import traceback
-            traceback.print_exc()
-            context = None
-        
-        # Check if this is a simple greeting
+        # Check if this is a simple greeting (before expensive retrieval)
         greeting_patterns = [
-            "hi", "hello", "hey", "greetings", "howdy", "hola", 
-            "how are you", "how's it going", "what's up", "sup", 
-            "good morning", "good afternoon", "good evening"
+            "hi", "hello", "hey", "greetings", "howdy", "hola",
+            "how are you", "how's it going", "hows it going", "what's up", "whats up",
+            "whats going on", "what's going on",
+            "sup",
+            "good morning", "good afternoon", "good evening",
         ]
-        
-        is_greeting = False
+
         clean_message = chat_request.message.strip().lower()
-        for greeting in greeting_patterns:
-            if greeting in clean_message:
-                is_greeting = True
-                break
-        
-        # For greetings, don't add context or special instructions
+        is_greeting = any(g in clean_message for g in greeting_patterns)
+
+        # Optional query flag from clients: skip vector search entirely (e.g. small talk)
+        context = None
+        if include_context and not is_greeting:
+            try:
+                context = chat_bot.search_for_context(chat_request.message)
+            except Exception as search_error:
+                print(f"Error in search_for_context: {search_error}")
+                import traceback
+                traceback.print_exc()
+                context = None
+
+        # For greetings, avoid irrelevant RAG snippets
         if is_greeting:
-            # Skip context for greetings to avoid irrelevant information
             context = None
-        
+
         # Modify the system prompt for the first message to focus on crawled sites
-        if is_first_message:
+        if is_first_message and not is_greeting:
             # Get all available sites to mention in the greeting
             try:
                 sites = chat_bot.crawler.db_client.get_all_sites()
