@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, status, Request
+from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 import asyncio
@@ -13,8 +13,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 # Import routers
-from api.routers import search, crawl, chat, sites, pages
-from api.auth import require_api_key
+from api.routers import search, crawl, chat, sites, pages, auth_webui
+from api.supa_auth import check_query_rate_limit, require_supa_request_auth
 from db_client import SupabaseClient
 from security_utils import UnsafeURL, env_bool, parse_csv_env, validate_fetch_url
 
@@ -48,6 +48,16 @@ class ApiAccessLogMiddleware(BaseHTTPMiddleware):
             ms,
         )
         return response
+
+
+class QueryRateLimitMiddleware(BaseHTTPMiddleware):
+    """In-process rate limit for GET /api/query only (QUERY_RATE_LIMIT_PER_MINUTE)."""
+
+    async def dispatch(self, request: Request, call_next):
+        if request.method == "GET" and request.url.path == "/api/query":
+            check_query_rate_limit(request)
+        return await call_next(request)
+
 
 # Load environment variables
 load_dotenv()
@@ -87,8 +97,8 @@ class TrailingSlashMiddleware(BaseHTTPMiddleware):
 
         return response
 
-# Create FastAPI app (no global API key: /api/health must stay reachable for Docker/orchestrator probes)
-_api_key_dep = [Depends(require_api_key)]
+# Optional Bearer / legacy keys / WebUI JWT (see api/supa_auth.py). /api/health stays public.
+_supa_auth_dep = [Depends(require_supa_request_auth)]
 
 app = FastAPI(
     title="Supa-Crawl-Chat API",
@@ -98,7 +108,8 @@ app = FastAPI(
     redirect_slashes=False,
 )
 
-# Add trailing slash middleware first
+# Innermost (just before routes): rate limit sees path after TrailingSlashMiddleware
+app.add_middleware(QueryRateLimitMiddleware)
 app.add_middleware(TrailingSlashMiddleware)
 
 cors_origins = list(parse_csv_env("API_CORS_ORIGINS"))
@@ -116,6 +127,9 @@ app.add_middleware(
 
 app.add_middleware(ApiAccessLogMiddleware)
 
+# WebUI login + auth status (no Bearer required)
+app.include_router(auth_webui.router, prefix="/api/auth", tags=["auth"])
+
 # Include routers
 # print("Registering routers...")
 # print(f"Search router: {search.router}")
@@ -124,19 +138,19 @@ app.add_middleware(ApiAccessLogMiddleware)
 # print(f"Sites router: {sites.router}")
 # print(f"Pages router: {pages.router}")
 
-app.include_router(search.router, prefix="/api/search", tags=["search"], dependencies=_api_key_dep)
+app.include_router(search.router, prefix="/api/search", tags=["search"], dependencies=_supa_auth_dep)
 # Alias for tools / local clients that expect GET .../query?query=...
 app.include_router(
     search.router,
     prefix="/api/query",
     tags=["search"],
     include_in_schema=False,
-    dependencies=_api_key_dep,
+    dependencies=_supa_auth_dep,
 )
-app.include_router(crawl.router, prefix="/api/crawl", tags=["crawl"], dependencies=_api_key_dep)
-app.include_router(chat.router, prefix="/api/chat", tags=["chat"], dependencies=_api_key_dep)
-app.include_router(sites.router, prefix="/api/sites", tags=["sites"], dependencies=_api_key_dep)
-app.include_router(pages.router, prefix="/api/pages", tags=["pages"], dependencies=_api_key_dep)
+app.include_router(crawl.router, prefix="/api/crawl", tags=["crawl"], dependencies=_supa_auth_dep)
+app.include_router(chat.router, prefix="/api/chat", tags=["chat"], dependencies=_supa_auth_dep)
+app.include_router(sites.router, prefix="/api/sites", tags=["sites"], dependencies=_supa_auth_dep)
+app.include_router(pages.router, prefix="/api/pages", tags=["pages"], dependencies=_supa_auth_dep)
 
 @app.get("/api")
 async def root():

@@ -40,8 +40,8 @@ Seamlessly crawl websites, transform content into vector embeddings, and enable 
     - **Full-Stack**: End-to-end solution with App + Crawl4AI + Supabase for maximum autonomy
 
 - 🌐 **Comprehensive API Ecosystem**
-  - RESTful API with interactive OpenAPI docs (`/docs`)
-  - Optional API key protection for all `/api` routes when `SCC_API_KEYS` or `API_KEYS` is set
+  - RESTful API with interactive OpenAPI docs (`/docs`); integration guide: **[docs/API.md](docs/API.md)**
+  - Optional authentication: `SUPA_API_AUTH` / `SUPA_API_KEY`, legacy `SCC_API_KEYS` / `API_KEYS`, and optional WebUI password + JWT (`WEBUI_PASSWORD`)
   - Crawl URL validation (SSRF mitigation) with optional private-network overrides for trusted deployments
 
 
@@ -164,6 +164,10 @@ To run the backend API and the frontend UI, follow these steps:
    ```
 
 This will start the backend API on port 8001 and the frontend dev server on port 3001 (see `frontend/vite.config.ts`).
+
+### Logging
+
+The backend uses **one rotating application log** by default: `log/app.log` (configure `APP_LOG_DIR`, `LOG_FILE`, `LOG_LEVEL`, and rotation via `.env`; see `.env.example`). HTTP access lines (`api_http METHOD /path -> status ms`), chat traces, and other services share that file — **there is no separate `log/api/` directory**. Set `API_ACCESS_LOG=false` to turn off per-request `api_http` lines; `/api/health`, `/docs`, `/redoc`, and `/openapi.json` are skipped to reduce noise. Optional per-crawl detail logs may appear under `log/crawl/` when crawls run.
 
  If you need a complete solution - crawl4ai with or without a local Supabase all in Docker see [Docker Deployment](#docker-deployment) section of the README
 
@@ -1200,20 +1204,24 @@ To use the full stack Docker setup:
 
 </details>
 
-For more detailed instructions, see the [Docker README](docker/full-stack/README.md) and [System Flows Documentation](docs/SYSTEM_FLOWS.md).
+For more detailed instructions, see the [Docker README](docker/full-stack/README.md), [System Flows Documentation](docs/SYSTEM_FLOWS.md), and the **[HTTP API guide](docs/API.md)**.
 
 ## API
 
 The project includes a FastAPI-based REST API that allows you to integrate the Supa-Crawl-Chat functionality with other applications or build custom frontends. The API provides endpoints for searching, crawling, managing sites, pages, and chatting.
 
+**Full reference:** [docs/API.md](docs/API.md) (auth headers, env vars, rate limits, public routes, curl examples). **Index of all docs:** [docs/README.md](docs/README.md). API traffic is logged in the same file as the rest of the app (see [Logging](#logging) above), not under a separate `log/api/` path.
+
 ### API security (optional)
 
-When `SCC_API_KEYS` or `API_KEYS` is set to a comma-separated list of secrets, **every** `/api` route requires one of:
+Authentication is enforced when **`SUPA_API_AUTH`** is enabled (with **`SUPA_API_KEY`**) and/or legacy **`SCC_API_KEYS`** / **`API_KEYS`** is set. Non-trusted clients must send:
 
-- Header `x-api-key: <key>`, or  
-- Header `Authorization: Bearer <key>`
+- Header `x-api-key: <secret>`, or  
+- Header `Authorization: Bearer <secret>`
 
-For the React UI, set `VITE_API_KEY` in `frontend/.env` to the same value (see `frontend/.env.example`). For browser clients, set `API_CORS_ORIGINS` to your frontend origins (comma-separated); if unset, the API uses permissive CORS for local development.
+(`x-api-key` wins if both are sent.) Localhost and optional trusted CIDRs may bypass keys; **`GET /api/health`** and **`/api/auth/webui/*`** stay public. WebUI password protection uses **`WEBUI_PASSWORD`** and JWTs from **`POST /api/auth/webui/login`**. See [docs/API.md](docs/API.md).
+
+For the React UI, set `VITE_API_KEY` in `frontend/.env` when using legacy keys (see `frontend/.env.example`). For browser clients, set `API_CORS_ORIGINS` to your frontend origins (comma-separated); if unset, the API uses permissive CORS for local development.
 
 Crawl targets are validated to reduce SSRF risk: only public `http`/`https` URLs are allowed unless you set `ALLOW_PRIVATE_CRAWL_URLS` or list hosts in `CRAWL_ALLOWED_HOSTS`. See `.env.example` for details.
 
@@ -1245,7 +1253,7 @@ http://localhost:8001/docs
 The API provides the following endpoints:
 
 <details>
-<summary>Click to expand APi Endpoints</summary>
+<summary>Click to expand API endpoints</summary>
 
 #### Search
 

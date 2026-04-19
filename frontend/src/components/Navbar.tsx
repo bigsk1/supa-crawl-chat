@@ -12,7 +12,8 @@ import {
   Globe,
   Database,
   Bell,
-  BookOpen
+  BookOpen,
+  LogOut
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -28,6 +29,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { useMediaQuery } from '@/hooks/use-media-query';
 import { createNotification } from '@/utils/notifications';
+import { useAuth } from '@/context/AuthContext';
 
 interface NavbarProps {
   toggleSidebar: () => void;
@@ -35,6 +37,7 @@ interface NavbarProps {
 
 const Navbar: React.FC<NavbarProps> = ({ toggleSidebar }) => {
   const { userProfile } = useUser();
+  const { needsLogin, token, logout } = useAuth();
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const location = useLocation();
   const pathname = location.pathname;
@@ -158,6 +161,21 @@ const Navbar: React.FC<NavbarProps> = ({ toggleSidebar }) => {
                 <span>User Guide</span>
               </Link>
             </DropdownMenuItem>
+            {needsLogin && token ? (
+              <>
+                <DropdownMenuSeparator className="bg-border" />
+                <DropdownMenuItem
+                  onClick={() => {
+                    logout();
+                    window.location.assign('/login');
+                  }}
+                  className="hover:bg-accent focus:bg-accent"
+                >
+                  <LogOut className="mr-2 h-4 w-4" />
+                  <span>Sign out</span>
+                </DropdownMenuItem>
+              </>
+            ) : null}
           </DropdownMenuContent>
         </DropdownMenu>
       </div>

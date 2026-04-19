@@ -1,14 +1,20 @@
 import { apiService, ChatMessage, Profile, UserPreference } from './apiService';
 import { trackApiCall } from '@/utils/notifications';
+import { getWebUiToken } from '@/lib/authStorage';
 
 // API base URL
 const API_BASE_URL = '/api';
 const API_KEY = import.meta.env.VITE_API_KEY as string | undefined;
 
-const jsonHeaders = () => ({
-  'Content-Type': 'application/json',
-  ...(API_KEY ? { 'x-api-key': API_KEY } : {}),
-});
+const jsonHeaders = (): Record<string, string> => {
+  const h: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  if (API_KEY) h['x-api-key'] = API_KEY;
+  const web = getWebUiToken();
+  if (web) h['Authorization'] = `Bearer ${web}`;
+  return h;
+};
 
 /** Align with api/routers/chat.py `_is_simple_greeting_message`: word boundaries (not "hi" inside "Hillsboro") + max words. */
 const CHAT_GREETING_MAX_WORDS = 12;

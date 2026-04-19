@@ -168,6 +168,8 @@ The LLM determines confidence scores based on:
 
 ## API Endpoints
 
+For authentication, rate limits, and the full HTTP surface (search, crawl, chat, sites, pages), see **[API.md](./API.md)**. Preference routes below are under **`/api/chat`** and follow the same auth rules as the rest of the API.
+
 ### List User Preferences
 
 ```

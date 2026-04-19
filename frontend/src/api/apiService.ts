@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { clearWebUiToken, getWebUiToken } from '@/lib/authStorage';
 
 // Base URL for API requests - ensure trailing slash
 const API_BASE_URL = '/api';
@@ -45,6 +46,11 @@ function shouldLogApiRequest(url: string | undefined, method: string | undefined
 
 // Add request interceptor with caching for GET requests
 apiClient.interceptors.request.use(async (request) => {
+  const web = getWebUiToken();
+  if (web) {
+    request.headers.set('Authorization', `Bearer ${web}`);
+  }
+
   if (shouldLogApiRequest(request.url, request.method)) {
     console.log(`API Request: ${request.method?.toUpperCase()} ${request.url}`);
   }
@@ -120,6 +126,13 @@ apiClient.interceptors.response.use(
     return response;
   },
   error => {
+    const status = error.response?.status;
+    if (status === 401 && getWebUiToken()) {
+      clearWebUiToken();
+      if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+        window.location.assign('/login');
+      }
+    }
     console.error('API Error:',
       error.response?.status || 'Network Error',
       error.config?.url || 'Unknown URL',

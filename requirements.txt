@@ -12,6 +12,7 @@ tiktoken>=0.8.0
 pyyaml>=6.0.1
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
+PyJWT>=2.8.0
 python-multipart>=0.0.26
 # realtime (supabase) needs websockets.asyncio (13+) and <16 per realtime's constraint
 websockets>=13,<16

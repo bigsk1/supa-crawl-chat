@@ -38,8 +38,12 @@ This document provides a detailed explanation of all the components, flows, and 
 
 ### 6. Security boundaries (API and crawl targets)
 
-- **Optional FastAPI authentication:** When `SCC_API_KEYS` or `API_KEYS` is set, clients must send a key on every `/api` request (`x-api-key` or `Authorization: Bearer`). The React app uses `VITE_API_KEY` for the same value. CORS is tightened for production by setting `API_CORS_ORIGINS` to allowed browser origins.
-- **Crawl URL validation:** User-supplied crawl and fetch URLs are checked in `security_utils.validate_fetch_url` to limit SSRF-style abuse (private IPs, non-http(s) schemes, credentials in URLs, etc.). Trusted internal crawls can use `ALLOW_PRIVATE_CRAWL_URLS` or host allowlists via `CRAWL_ALLOWED_HOSTS` (see `.env.example`).
+- **Optional API authentication (`api/supa_auth.py`, `api/auth.py`):**  
+  - **`SUPA_API_AUTH`** + **`SUPA_API_KEY`**: when enabled, non-trusted IPs must send the key as **`x-api-key`** or **`Authorization: Bearer`** (localhost and optional **`SUPA_API_TRUST_CIDRS`** / **`SUPA_API_TRUST_FORWARDED`** may bypass).  
+  - **Legacy keys:** **`SCC_API_KEYS`** or **`API_KEYS`** — same headers; the React app can use **`VITE_API_KEY`** for `x-api-key`.  
+  - **WebUI JWT:** If **`WEBUI_PASSWORD`** is set, the browser logs in via **`POST /api/auth/webui/login`** and sends a **`Authorization: Bearer`** token (JWT) on subsequent API calls.  
+  - **`/api/health`** and **`/api/auth/webui/*`** stay public (no key). Full detail: [API.md](./API.md).  
+- **Crawl URL validation:** User-supplied crawl and fetch URLs are checked in `security_utils.validate_fetch_url` to limit SSRF-style abuse (private IPs, non-http(s) schemes, credentials in URLs, etc.). Trusted internal crawls can use `ALLOW_PRIVATE_CRAWL_URLS` or host allowlists via `CRAWL_ALLOWED_HOSTS` (see `.env.example`). CORS: set **`API_CORS_ORIGINS`** for production browser origins.
 
 ### Search, embeddings, and keyword retrieval (not BM25)
 

@@ -277,7 +277,7 @@ const SiteDetailPage = () => {
           return;
         }
         try {
-          const raw = (await apiService.getCrawlStatus(id)) as Record<string, unknown>;
+          const raw = (await apiService.getCrawlStatus(id)) as unknown as Record<string, unknown>;
           const job = raw.job as Record<string, unknown> | null | undefined;
           const jobSt = norm(job?.status);
           const topSt = norm(raw.status);

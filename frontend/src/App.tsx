@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import Layout from './components/Layout';
 import HomePage from './pages/HomePage';
@@ -12,7 +12,32 @@ import NotFoundPage from './pages/NotFoundPage';
 import NotificationInfo from './pages/NotificationInfo';
 import UserPreferencesPage from './pages/UserPreferencesPage';
 import UserGuidePage from './pages/UserGuidePage';
+import LoginPage from './pages/LoginPage';
 import { useTheme } from './context/ThemeContext';
+import { useAuth } from './context/AuthContext';
+
+function AuthGate() {
+  const { ready, needsLogin, token } = useAuth();
+  const location = useLocation();
+
+  if (!ready) {
+    return (
+      <div className="flex min-h-screen items-center justify-center text-muted-foreground">
+        Loading…
+      </div>
+    );
+  }
+  if (!needsLogin && location.pathname === '/login') {
+    return <Navigate to="/" replace />;
+  }
+  if (needsLogin && token && location.pathname === '/login') {
+    return <Navigate to="/" replace />;
+  }
+  if (needsLogin && !token && location.pathname !== '/login') {
+    return <Navigate to="/login" replace state={{ from: location }} />;
+  }
+  return <Outlet />;
+}
 
 // Custom toast container that respects the current theme
 const ToastContainer = () => {
@@ -68,18 +93,21 @@ function App() {
   return (
     <>
       <Routes>
-        <Route path="/" element={<Layout />}>
-          <Route index element={<HomePage />} />
-          <Route path="chat" element={<ChatPage />} />
-          <Route path="crawl" element={<CrawlPage />} />
-          <Route path="search" element={<SearchPage />} />
-          <Route path="sites" element={<SitesPage />} />
-          <Route path="sites/:siteId" element={<SiteDetailPage />} />
-          <Route path="notifications" element={<NotificationInfo />} />
-          <Route path="preferences" element={<UserPreferencesPage />} />
-          <Route path="preferences/:userId" element={<UserPreferencesPage />} />
-          <Route path="guide" element={<UserGuidePage />} />
-          <Route path="*" element={<NotFoundPage />} />
+        <Route element={<AuthGate />}>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/" element={<Layout />}>
+            <Route index element={<HomePage />} />
+            <Route path="chat" element={<ChatPage />} />
+            <Route path="crawl" element={<CrawlPage />} />
+            <Route path="search" element={<SearchPage />} />
+            <Route path="sites" element={<SitesPage />} />
+            <Route path="sites/:siteId" element={<SiteDetailPage />} />
+            <Route path="notifications" element={<NotificationInfo />} />
+            <Route path="preferences" element={<UserPreferencesPage />} />
+            <Route path="preferences/:userId" element={<UserPreferencesPage />} />
+            <Route path="guide" element={<UserGuidePage />} />
+            <Route path="*" element={<NotFoundPage />} />
+          </Route>
         </Route>
       </Routes>
       <ToastContainer />

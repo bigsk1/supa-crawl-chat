@@ -1264,19 +1264,26 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
             # Check if the query contains any follow-up indicators
             is_followup = any(indicator in clean_query for indicator in follow_up_indicators)
 
-            # Short queries are likely follow-ups
-            if len(clean_query.split()) <= 5:
+            # Short queries are often continuations — but not standalone greetings ("howdy", "hi", …).
+            # If we mark those as follow-ups, the greeting fast-path never runs and the model keeps
+            # riffing on the last assistant topic (e.g. Brave/testing instructions).
+            if len(clean_query.split()) <= 5 and not is_greeting:
                 is_followup = True
 
             console.print(f"[dim]DEBUG: Follow-up detection: {is_followup}[/dim]")
+
+        # Simple greetings must not count as follow-ups: (1) short queries were always follow-ups if any
+        # prior assistant message existed; (2) substring checks like "he" in "hey" falsely set follow-up.
+        _greet_max = max(3, int(os.getenv("CHAT_GREETING_MAX_WORDS", "12")))
+        if is_greeting and len(clean_query.split()) <= _greet_max:
+            is_followup = False
 
         # Greeting fast-path skips RAG and llm_inject (e.g. Brave web context). Do not use it when:
         # - API router added injectable system messages (Brave, RAG hints), or
         # - the message is long (not "just hi"), or
         # - the user explicitly asked for web/Brave lookup (run full path even if Brave fetch failed).
         inject_early = self._llm_inject_system_contents_for_current_turn()
-        max_greeting_words = max(3, int(os.getenv("CHAT_GREETING_MAX_WORDS", "12")))
-        short_for_greeting = len(clean_query.split()) <= max_greeting_words
+        short_for_greeting = len(clean_query.split()) <= _greet_max
         asks_web_explicit = user_requests_brave_explicit(query)
 
         # For greetings, don't do complex processing or context search
