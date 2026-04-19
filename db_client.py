@@ -7,6 +7,7 @@ from psycopg2.extras import execute_values, Json
 from dotenv import load_dotenv
 from utils import print_info, print_warning, print_error, print_success
 from db_setup import db_params  # Import the db_params from db_setup.py
+from search_quality import should_exclude_from_vector_hits
 import re
 
 # Load environment variables
@@ -723,7 +724,8 @@ class SupabaseClient:
                         1 - (p.embedding <=> %s::vector) DESC
                     LIMIT %s
                     """
-                    params = [embedding_str, site_id, embedding_str, limit * 2]  # Get more results initially
+                    fetch_n = min(200, max(limit * 5, 20))
+                    params = [embedding_str, site_id, embedding_str, fetch_n]
                 else:
                     search_query = """
                     SELECT
@@ -741,7 +743,8 @@ class SupabaseClient:
                         1 - (p.embedding <=> %s::vector) DESC
                     LIMIT %s
                     """
-                    params = [embedding_str, embedding_str, limit * 2]  # Get more results initially
+                    fetch_n = min(200, max(limit * 5, 20))
+                    params = [embedding_str, embedding_str, fetch_n]
 
                 print_info(f"Executing vector search query...")
                 cur.execute(search_query, params)
@@ -777,8 +780,13 @@ class SupabaseClient:
                         "similarity": row[12]
                     }
 
-                    # Only include results above the threshold
+                    # Only include results above the threshold; drop encoded blobs (base64 noise in crawls)
                     if result["similarity"] >= threshold:
+                        if should_exclude_from_vector_hits(
+                            result.get("content"),
+                            result.get("summary"),
+                        ):
+                            continue
                         results.append(result)
 
                 # Log the similarity scores for debugging
@@ -834,7 +842,7 @@ class SupabaseClient:
             print_info(f"Performing vector search with threshold {threshold}...")
             vector_threshold = max(threshold * 0.7, 0.2)  # Lower threshold for vector search, but not below 0.2
             print_info(f"Adjusted vector threshold to {vector_threshold}")
-            vector_results = self.search_by_embedding(embedding, vector_threshold, limit * 2, site_id)
+            vector_results = self.search_by_embedding(embedding, vector_threshold, limit * 3, site_id)
 
             if vector_results:
                 print_info(f"Vector search found {len(vector_results)} results")

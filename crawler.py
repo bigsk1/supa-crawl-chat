@@ -14,6 +14,7 @@ from embeddings import EmbeddingGenerator
 from db_client import SupabaseClient
 from content_enhancer import ContentEnhancer
 from security_utils import UnsafeURL, validate_fetch_url
+from search_quality import rerank_search_results_by_query_terms
 from utils import console, print_header, print_success, print_error, print_warning, print_info, get_rich_progress
 
 
@@ -1108,6 +1109,8 @@ class WebCrawler:
                     print_warning("No results from hybrid search, falling back to text search")
                     results = self.db_client.search_by_text(query, limit, site_id)
 
+                results = rerank_search_results_by_query_terms(query, results)
+
                 # Enhance results with context
                 enhanced_results = []
                 for result in results:
@@ -1142,6 +1145,7 @@ class WebCrawler:
             # Use text search
             print_info("Using text search...")
             results = self.db_client.search_by_text(query, limit, site_id)
+            results = rerank_search_results_by_query_terms(query, results)
 
             # Enhance results with context
             enhanced_results = []
