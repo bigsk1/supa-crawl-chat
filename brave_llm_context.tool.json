@@ -1,0 +1,18 @@
+{
+  "name": "brave_llm_context",
+  "description": "Brave Search LLM Context — pre-extracted web snippets for grounding (X-Subscription-Token).",
+  "documentation": "https://api-dashboard.search.brave.com/documentation/services/llm-context",
+  "endpoint": "GET https://api.search.brave.com/res/v1/llm/context",
+  "auth_header": "X-Subscription-Token",
+  "env": {
+    "BRAVE_API_KEY": "Subscription token (same header value)",
+    "BRAVE_WEB_CONTEXT": "off | when_empty | when_weak | always | auto (explicit web ask, empty RAG, or weak RAG)",
+    "BRAVE_MAX_TOKENS": "1024-32768, default 4096",
+    "BRAVE_MAX_SNIPPETS": "1-100, default 50",
+    "BRAVE_COUNT": "1-50, default 12",
+    "BRAVE_CONTEXT_THRESHOLD_MODE": "strict | balanced | lenient | disabled",
+    "BRAVE_LLM_CONTEXT_URL": "Override base URL if Brave changes path",
+    "BRAVE_HTTP_TIMEOUT": "Seconds, default 30"
+  },
+  "notes": "Integrated in api/routers/chat.py; not wired to MCP in this repo."
+}

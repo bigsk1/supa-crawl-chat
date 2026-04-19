@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { CrawlStatus } from '@/api/apiService';
 import { api } from '@/api/apiWrapper';
@@ -48,13 +48,14 @@ const CrawlPage = () => {
   const [includePatterns, setIncludePatterns] = useState('');
   const [excludePatterns, setExcludePatterns] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [activeCrawls, setActiveCrawls] = useState<CrawlStatus[]>([]);
+  const [runningCrawls, setRunningCrawls] = useState<CrawlStatus[]>([]);
+  const [finishedCrawls, setFinishedCrawls] = useState<CrawlStatus[]>([]);
+  const [listLoading, setListLoading] = useState(true);
   const [debugData, setDebugData] = useState<any>(null);
   const [showDebugPanel, setShowDebugPanel] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   
   // Advanced options
   const [headless, setHeadless] = useState(true);
@@ -71,112 +72,93 @@ const CrawlPage = () => {
   const [extractionType, setExtractionType] = useState('basic');
   const [cssSelector, setCssSelector] = useState('');
 
+  /** One GET /api/crawl/activity replaces N× /crawl/status + /sites per tick. */
+  const CRAWL_ACTIVITY_POLL_MS = 15000;
+
   useEffect(() => {
-    // Initial load
-    loadActiveCrawls();
-    
-    // Set up polling every 10 seconds to check for new crawls
-    const interval = setInterval(loadActiveCrawls, 10000);
-    setPollingInterval(interval);
-    
-    // Clean up interval when component unmounts
+    void loadActiveCrawls(false, false);
+    pollRef.current = setInterval(() => {
+      void loadActiveCrawls(false, true);
+    }, CRAWL_ACTIVITY_POLL_MS);
     return () => {
-      if (pollingInterval) {
-        clearInterval(pollingInterval);
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
       }
     };
   }, []);
 
-  const loadActiveCrawls = async (bypassCache = false) => {
+  const isRunningStatus = (s: string | undefined) => {
+    const v = (s || '').toLowerCase();
+    return ['queued', 'running', 'in_progress', 'processing'].includes(v);
+  };
+
+  const loadActiveCrawls = async (bypassCache = false, quiet = true) => {
+    if (!quiet) {
+      setListLoading(true);
+    }
     try {
-      let sitesData;
-      
-      if (bypassCache) {
-        // Bypass cache by making a direct API call
-        const response = await axios.get('/api/sites');
-        console.log('Direct API response for crawls (bypass cache):', response.data);
-        
-        // Handle the response format with a sites array
-        if (response.data && response.data.sites && Array.isArray(response.data.sites)) {
-          sitesData = response.data.sites;
-        } else {
-          sitesData = response.data;
-        }
-      } else {
-        // First try to get all sites, as they contain the crawl information
-        sitesData = await api.getSites();
-        console.log('Sites data for crawls:', sitesData);
-      }
-      
-      // Handle different response formats
-      if (Array.isArray(sitesData) && sitesData.length > 0) {
-        // Convert sites to crawl status format
-        const crawlsFromSites = sitesData.map(site => ({
-          site_id: site.id,
-          site_name: site.name,
-          name: site.name,
-          url: site.url,
-          page_count: site.page_count || 0,
-          chunk_count: 0,
-          total_count: site.page_count || 0,
-          created_at: site.created_at,
-          updated_at: site.created_at,
-          status: 'completed',
-          next_steps: {
-            view_pages: `/sites/${site.id}`,
-            search_content: `/search?site_id=${site.id}`
-          }
-        }));
-        
-        // Sort crawls by created_at date (newest first)
-        const sortedCrawls = [...crawlsFromSites].sort((a, b) => {
-          // Convert dates to timestamps for comparison
-          const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
-          const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
-          // Sort in descending order (newest first)
-          return dateB - dateA;
-        });
-        
-        setActiveCrawls(sortedCrawls);
+      const response = await axios.get('/api/crawl/activity', {
+        params: bypassCache ? { _: Date.now() } : undefined,
+      });
+
+      const sitesData: unknown[] = Array.isArray(response.data?.sites)
+        ? response.data.sites
+        : [];
+
+      if (sitesData.length === 0) {
+        setRunningCrawls([]);
+        setFinishedCrawls([]);
         return;
-      } else if (sitesData && typeof sitesData === 'object' && !Array.isArray(sitesData)) {
-        // If it's a single site object, convert to array
-        console.log('Single site object received, converting to crawl status');
-        const site = sitesData;
-        const crawlStatus = {
-          site_id: site.id,
-          site_name: site.name,
-          name: site.name,
-          url: site.url,
-          page_count: site.page_count || 0,
-          chunk_count: 0,
-          total_count: site.page_count || 0,
-          created_at: site.created_at,
-          updated_at: site.created_at,
-          status: 'completed',
-          next_steps: {
-            view_pages: `/sites/${site.id}`,
-            search_content: `/search?site_id=${site.id}`
-          }
+      }
+
+      const enriched: CrawlStatus[] = (sitesData as any[]).map((sp: any) => {
+        const sid = sp.site_id;
+        const rawStatus =
+          (typeof sp.status === 'string' && sp.status) || 'completed';
+        return {
+          site_id: sid,
+          site_name: sp.site_name || '',
+          name: sp.site_name || '',
+          url: sp.url || '',
+          page_count: sp.page_count ?? 0,
+          chunk_count: sp.chunk_count ?? 0,
+          total_count: sp.total_count ?? 0,
+          created_at: sp.created_at || '',
+          updated_at: sp.updated_at || sp.created_at || '',
+          status: rawStatus,
+          next_steps: sp.next_steps || {
+            view_pages: `/sites/${sid}`,
+            search_content: `/search?site_id=${sid}`,
+          },
         };
-        setActiveCrawls([crawlStatus]);
-        return;
-      }
-      
-      // If no sites are found or the format is unexpected, set empty array
-      console.log('No valid sites data found, setting empty array');
-      setActiveCrawls([]);
+      });
+
+      const sortByCreated = (a: CrawlStatus, b: CrawlStatus) => {
+        const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
+        return dateB - dateA;
+      };
+
+      const running = enriched.filter((c) => isRunningStatus(c.status)).sort(sortByCreated);
+      const done = enriched.filter((c) => !isRunningStatus(c.status)).sort(sortByCreated);
+      setRunningCrawls(running);
+      setFinishedCrawls(done);
     } catch (error) {
-      console.error('Error loading active crawls:', error);
-      // Don't show toast for background polling
-      setActiveCrawls([]); // Set empty array on error
+      console.error('Error loading crawl lists:', error);
+      setRunningCrawls([]);
+      setFinishedCrawls([]);
+    } finally {
+      if (!quiet) {
+        setListLoading(false);
+      }
     }
   };
 
   const manualRefresh = async () => {
     setRefreshing(true);
     try {
-      await loadActiveCrawls(true); // Pass true to bypass cache
+      await loadActiveCrawls(true, true);
       toast.success('Crawl list updated', { id: 'crawl-list-refresh', duration: 2200 });
     } catch (error) {
       console.error('Error refreshing crawls:', error);
@@ -261,7 +243,7 @@ const CrawlPage = () => {
       resetForm();
       
       // Refresh the crawl list
-      await loadActiveCrawls(true);
+      await loadActiveCrawls(true, false);
       
     } catch (error) {
       console.error('Error starting crawl:', error);
@@ -309,6 +291,7 @@ const CrawlPage = () => {
         return 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-200';
       case 'in_progress':
       case 'processing':
+      case 'running':
         return 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-200';
       case 'failed':
         return 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-200';
@@ -573,62 +556,101 @@ const CrawlPage = () => {
         <div>
           <div className="card p-6">
             <div className="flex justify-between items-center mb-4">
-              <h2 className="text-xl font-semibold">Active Crawls</h2>
+              <h2 className="text-xl font-semibold">Crawl activity</h2>
               <button
-                onClick={() => loadActiveCrawls(true)}
+                type="button"
+                onClick={() => void manualRefresh()}
                 className="text-xs bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 p-2 rounded-full flex items-center"
                 disabled={refreshing}
-                title="Refresh crawl list"
+                title="Refresh crawl status from API"
               >
                 <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
               </button>
             </div>
-            
-            {isLoading ? (
+
+            {listLoading ? (
               <div className="flex justify-center items-center h-32">
                 <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-blue-500"></div>
               </div>
-            ) : activeCrawls.length === 0 ? (
-              <div className="text-center py-8 text-gray-500 dark:text-gray-400">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 mx-auto mb-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                <p className="text-lg font-medium">No active crawls</p>
-                <p className="mt-1">Start a new crawl to see it here</p>
-              </div>
             ) : (
-              <div className="space-y-4">
-                {activeCrawls.map((crawl) => (
-                  <div key={crawl.site_id} className="border border-gray-200 dark:border-gray-700 rounded-md p-4">
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <h3 className="font-medium text-gray-900 dark:text-gray-100">{crawl.site_name}</h3>
-                        <p className="text-sm text-gray-600 dark:text-gray-400 break-all">{crawl.url}</p>
-                      </div>
-                      <div className="flex items-center">
-                        <span className={`text-xs px-2 py-1 rounded-full ${getStatusColor(crawl.status)}`}>
-                          {crawl.status || 'Unknown'}
-                        </span>
-                      </div>
+              <div className="space-y-8">
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3">
+                    Running (queued / in progress)
+                  </h3>
+                  {runningCrawls.length === 0 ? (
+                    <p className="text-sm text-gray-500 dark:text-gray-400 py-2">None right now.</p>
+                  ) : (
+                    <div className="space-y-4">
+                      {runningCrawls.map((crawl) => (
+                        <div key={crawl.site_id} className="border border-blue-200 dark:border-blue-900/40 rounded-md p-4 bg-blue-50/30 dark:bg-blue-950/20">
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <h4 className="font-medium text-gray-900 dark:text-gray-100">{crawl.site_name}</h4>
+                              <p className="text-sm text-gray-600 dark:text-gray-400 break-all">{crawl.url}</p>
+                            </div>
+                            <span className={`text-xs px-2 py-1 rounded-full ${getStatusColor(crawl.status)}`}>
+                              {crawl.status || 'Unknown'}
+                            </span>
+                          </div>
+                          <div className="mt-2 text-xs text-gray-600 dark:text-gray-400">
+                            <p>Created: {formatDate(crawl.created_at)}</p>
+                            <p>Pages indexed: {crawl.page_count || 0}</p>
+                          </div>
+                          <div className="mt-3 flex justify-end">
+                            <button
+                              type="button"
+                              onClick={() => handleViewSite(crawl.site_id)}
+                              className="text-xs bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 hover:bg-blue-200 dark:hover:bg-blue-800/50 px-3 py-1 rounded-md flex items-center"
+                            >
+                              <Eye className="mr-1 h-3 w-3" />
+                              View Site
+                            </button>
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                    
-                    <div className="mt-2 text-xs text-gray-600 dark:text-gray-400">
-                      <p>Created: {formatDate(crawl.created_at)}</p>
-                      <p>Pages: {crawl.page_count || 0}</p>
-                      {crawl.depth && <p>Crawled with depth={crawl.depth}, follow_external={crawl.follow_external_links?.toString() || 'false'}</p>}
+                  )}
+                </div>
+
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3">
+                    Finished / idle
+                  </h3>
+                  {finishedCrawls.length === 0 ? (
+                    <p className="text-sm text-gray-500 dark:text-gray-400 py-2">No sites yet.</p>
+                  ) : (
+                    <div className="space-y-4">
+                      {finishedCrawls.map((crawl) => (
+                        <div key={crawl.site_id} className="border border-gray-200 dark:border-gray-700 rounded-md p-4">
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <h4 className="font-medium text-gray-900 dark:text-gray-100">{crawl.site_name}</h4>
+                              <p className="text-sm text-gray-600 dark:text-gray-400 break-all">{crawl.url}</p>
+                            </div>
+                            <span className={`text-xs px-2 py-1 rounded-full ${getStatusColor(crawl.status)}`}>
+                              {crawl.status || 'Unknown'}
+                            </span>
+                          </div>
+                          <div className="mt-2 text-xs text-gray-600 dark:text-gray-400">
+                            <p>Created: {formatDate(crawl.created_at)}</p>
+                            <p>Pages: {crawl.page_count || 0}</p>
+                          </div>
+                          <div className="mt-3 flex justify-end">
+                            <button
+                              type="button"
+                              onClick={() => handleViewSite(crawl.site_id)}
+                              className="text-xs bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 hover:bg-blue-200 dark:hover:bg-blue-800/50 px-3 py-1 rounded-md flex items-center"
+                            >
+                              <Eye className="mr-1 h-3 w-3" />
+                              View Site
+                            </button>
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                    
-                    <div className="mt-3 flex justify-end">
-                      <button
-                        onClick={() => handleViewSite(crawl.site_id)}
-                        className="text-xs bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 hover:bg-blue-200 dark:hover:bg-blue-800/50 px-3 py-1 rounded-md flex items-center"
-                      >
-                        <Eye className="mr-1 h-3 w-3" />
-                        View Site
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  )}
+                </div>
               </div>
             )}
           </div>

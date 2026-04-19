@@ -26,11 +26,17 @@ import time
 
 from utils import print_success, print_error, print_warning, print_info
 
+from brave_llm_context import user_requests_brave_explicit
+
 # Create a rich console
 console = Console()
 
 # Load environment variables
 load_dotenv()
+
+from app_logging import configure_logging
+
+configure_logging()
 
 # Create a flag to control verbose output
 VERBOSE_OUTPUT = False
@@ -44,6 +50,22 @@ def _openai_chat_token_kwargs(model: Optional[str], limit: int) -> Dict[str, int
     if m.startswith(("gpt-5", "o1", "o3", "o4")):
         return {"max_completion_tokens": limit}
     return {"max_tokens": limit}
+
+
+def _chat_max_completion_tokens() -> int:
+    """Output token cap for normal assistant replies (not counting prompt/context). Default 1000."""
+    try:
+        return max(256, int(os.getenv("CHAT_MAX_COMPLETION_TOKENS", "1000")))
+    except ValueError:
+        return 1000
+
+
+def _chat_greeting_max_completion_tokens() -> int:
+    """Output token cap for the greeting fast-path. Default 150."""
+    try:
+        return max(32, int(os.getenv("CHAT_GREETING_MAX_COMPLETION_TOKENS", "150")))
+    except ValueError:
+        return 150
 
 # Override print functions to respect verbose mode
 def chat_print_info(text: str):
@@ -336,10 +358,10 @@ class ChatBot:
                 if user_messages:
                     console.print(f"[blue]Previous conversation includes {len(user_messages)} user messages[/blue]")
 
-                    # Show the first and last user message as a preview
+                    # Oldest/newest user lines in this session (debug only — does not affect greeting or routing)
                     if len(user_messages) > 1:
-                        console.print(f"[blue]First message: '{user_messages[0]['content'][:50]}...'[/blue]")
-                        console.print(f"[blue]Last message: '{user_messages[-1]['content'][:50]}...'[/blue]")
+                        console.print(f"[blue]Oldest user message (preview): '{user_messages[0]['content'][:50]}...'[/blue]")
+                        console.print(f"[blue]Latest user message (preview): '{user_messages[-1]['content'][:50]}...'[/blue]")
 
                 # Consolidate and display user preferences if any were found
                 if all_preferences:
@@ -362,23 +384,30 @@ class ChatBot:
             console.print(f"[red]Error loading conversation history: {e}[/red]")
             self.conversation_history = []
 
-    def add_system_message(self, content: str):
+    def add_system_message(self, content: str, metadata: Optional[Dict[str, Any]] = None):
         """Add a system message to the conversation history.
 
         Args:
             content: The message content.
+            metadata: Optional metadata. Use ``{"llm_inject": True}`` for router-injected
+                instructions that must be forwarded to the LLM (see ``_llm_inject_system_contents_for_current_turn``).
         """
-        # Add the message to the conversation history
-        message = {
+        message: Dict[str, Any] = {
             "role": "system",
             "content": content,
-            "timestamp": datetime.datetime.now().isoformat()
+            "timestamp": datetime.datetime.now().isoformat(),
         }
+        if metadata:
+            message["metadata"] = metadata
         self.conversation_history.append(message)
 
         # If the crawler is not available, return
         if not self.crawler:
             return
+
+        save_metadata: Dict[str, Any] = {"profile": self.profile_name}
+        if metadata:
+            save_metadata.update(metadata)
 
         # Save the message to the database
         try:
@@ -387,10 +416,29 @@ class ChatBot:
                 role="system",
                 content=content,
                 user_id=self.user_id,
-                metadata={"profile": self.profile_name}
+                metadata=save_metadata,
             )
         except Exception as e:
             console.print(f"[red]Error saving system message to database: {e}[/red]")
+
+    def _llm_inject_system_contents_for_current_turn(self) -> List[str]:
+        """System messages tagged with ``llm_inject`` (API router) must be sent to the model.
+
+        Only messages after the last assistant turn are included so prior-turn Brave/RAG hints
+        are not re-injected.
+        """
+        last_asst = -1
+        for i, msg in enumerate(self.conversation_history):
+            if msg.get("role") == "assistant":
+                last_asst = i
+        out: List[str] = []
+        for msg in self.conversation_history[last_asst + 1 :]:
+            if msg.get("role") != "system":
+                continue
+            meta = msg.get("metadata") or {}
+            if meta.get("llm_inject"):
+                out.append(msg["content"])
+        return out
 
     def add_user_message(self, content: str):
         """Add a user message to the conversation history.
@@ -1222,8 +1270,23 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
 
             console.print(f"[dim]DEBUG: Follow-up detection: {is_followup}[/dim]")
 
+        # Greeting fast-path skips RAG and llm_inject (e.g. Brave web context). Do not use it when:
+        # - API router added injectable system messages (Brave, RAG hints), or
+        # - the message is long (not "just hi"), or
+        # - the user explicitly asked for web/Brave lookup (run full path even if Brave fetch failed).
+        inject_early = self._llm_inject_system_contents_for_current_turn()
+        max_greeting_words = max(3, int(os.getenv("CHAT_GREETING_MAX_WORDS", "12")))
+        short_for_greeting = len(clean_query.split()) <= max_greeting_words
+        asks_web_explicit = user_requests_brave_explicit(query)
+
         # For greetings, don't do complex processing or context search
-        if is_greeting and not is_followup:
+        if (
+            is_greeting
+            and not is_followup
+            and short_for_greeting
+            and not inject_early
+            and not asks_web_explicit
+        ):
             console.print(f"[blue]Detected greeting: '{clean_query}'[/blue]")
 
             # For greetings, we don't need to search for context
@@ -1242,7 +1305,7 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
                     model=self.model,
                     messages=messages,
                     temperature=0.7,
-                    **_openai_chat_token_kwargs(self.model, 150),
+                    **_openai_chat_token_kwargs(self.model, _chat_greeting_max_completion_tokens()),
                 )
 
                 response_text = response.choices[0].message.content.strip()
@@ -1564,8 +1627,16 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
             # Add instructions for using preferences
             system_prompt += "\n\nWhen appropriate, reference the user's preferences and background to personalize your responses. Don't force mentioning preferences, but use them to add context and relevance. Balance between addressing their query directly and personalizing based on what you know about them."
 
+        inject_blocks = self._llm_inject_system_contents_for_current_turn()
+        web_hint = ""
+        if inject_blocks:
+            web_hint = """
+
+WEB_CONTEXT: Additional system messages may contain BRAVE_WEB_CONTEXT (live web snippets from Brave Search). When those messages are present, you CAN answer from them — do not refuse, and do not claim you cannot search the web or browse. Prefer the user's crawled content in the database context below for their indexed sites; use web context for public-web facts, gaps, missing crawled coverage, or when the user asks for current web information."""
+
         # Create a system message that guides the LLM's behavior
         system_message = f"""You are acting according to this profile: {self.profile_name}
+{web_hint}
 
 CRITICAL INSTRUCTION: The "DATABASE SEARCH RESULTS" section contains verified information from a database. This is your PRIMARY source of information. Use this information FIRST before relying on other sources, but aim for a conversational, human-like tone in your responses.
 
@@ -1643,6 +1714,9 @@ Always maintain continuity in the conversation.
                 "content": f"Relevant information from conversation history:\n{conversation_analysis}"
             })
 
+        for inj in inject_blocks:
+            messages.append({"role": "system", "content": inj})
+
         # Add the context from the database search
         messages.append({"role": "system", "content": f"Context from database search:\n{context}"})
 
@@ -1651,7 +1725,7 @@ Always maintain continuity in the conversation.
             model=self.model,
             messages=messages,
             temperature=0.7,
-            **_openai_chat_token_kwargs(self.model, 1000),
+            **_openai_chat_token_kwargs(self.model, _chat_max_completion_tokens()),
         )
 
         # Extract the response text
@@ -2140,8 +2214,16 @@ If there is no relevant information, respond with "No relevant information found
         time_str = now.strftime("%I:%M %p")
         system_prompt += f"\n\nThe current date is {date_str} and the time is {time_str}."
 
+        inject_blocks = self._llm_inject_system_contents_for_current_turn()
+        web_hint = ""
+        if inject_blocks:
+            web_hint = """
+
+WEB_CONTEXT: Additional system messages may contain BRAVE_WEB_CONTEXT (live web snippets). When present, use them — do not refuse or claim you cannot search the web. Prefer DATABASE SEARCH RESULTS for the user's crawled sites; use web context for public web, gaps, or freshness."""
+
         # Create a system message that guides the LLM's behavior
         system_message = f"""You are acting according to this profile: {self.profile_name}
+{web_hint}
 
 {system_prompt}
 
@@ -2213,6 +2295,9 @@ For example, change 'https://example.com/page/#chunk-0' to 'https://example.com/
                     "content": f"IMPORTANT: This is a follow-up question about something you mentioned in your previous response. Your previous response was:\n\n{last_assistant_message}\n\nMake sure to provide detailed information about the topic the user is asking about."
                 })
 
+        for inj in inject_blocks:
+            messages.append({"role": "system", "content": inj})
+
         # Add the context from the database search
         messages.append({"role": "system", "content": f"DATABASE SEARCH RESULTS:\n{context_str}"})
 
@@ -2235,7 +2320,7 @@ For example, change 'https://example.com/page/#chunk-0' to 'https://example.com/
                 model=self.model,
                 messages=messages,
                 temperature=0.7,
-                **_openai_chat_token_kwargs(self.model, 1000),
+                **_openai_chat_token_kwargs(self.model, _chat_max_completion_tokens()),
             )
 
             # Extract the response text

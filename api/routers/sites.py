@@ -18,6 +18,8 @@ class Site(BaseModel):
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     page_count: Optional[int] = None
+    last_crawled_at: Optional[str] = None
+    crawl_job_status: Optional[str] = None
 
     class Config:
         arbitrary_types_allowed = True
@@ -31,7 +33,41 @@ class Site(BaseModel):
         if 'updated_at' in site_dict and site_dict['updated_at'] is not None:
             if not isinstance(site_dict['updated_at'], str):
                 site_dict['updated_at'] = str(site_dict['updated_at'])
+        if 'last_crawled_at' in site_dict and site_dict['last_crawled_at'] is not None:
+            if not isinstance(site_dict['last_crawled_at'], str):
+                site_dict['last_crawled_at'] = str(site_dict['last_crawled_at'])
         return cls(**site_dict)
+
+
+def _enrich_site_crawl_meta(db_client: SupabaseClient, site_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Best-effort last crawl time from crawl_jobs; complements site.updated_at."""
+    site_id = site_dict["id"]
+    job = db_client.get_latest_crawl_job_by_site_id(site_id)
+    last_crawled_at: Optional[str] = None
+    crawl_job_status: Optional[str] = None
+
+    def _iso(val: Any) -> Optional[str]:
+        if val is None:
+            return None
+        return val if isinstance(val, str) else str(val)
+
+    if job:
+        st = job.get("status")
+        crawl_job_status = str(st) if st is not None else None
+        fin = job.get("finished_at")
+        if fin:
+            last_crawled_at = _iso(fin)
+        elif crawl_job_status in ("running", "queued"):
+            last_crawled_at = _iso(job.get("started_at")) or _iso(job.get("updated_at"))
+        if last_crawled_at is None:
+            last_crawled_at = _iso(job.get("updated_at")) or _iso(site_dict.get("updated_at"))
+    else:
+        last_crawled_at = _iso(site_dict.get("updated_at") or site_dict.get("created_at"))
+
+    out = dict(site_dict)
+    out["last_crawled_at"] = last_crawled_at
+    out["crawl_job_status"] = crawl_job_status
+    return out
 
 class SiteList(BaseModel):
     sites: List[Site]
@@ -131,6 +167,7 @@ async def get_site(
 
         site_data = site.copy()
         site_data["page_count"] = page_count
+        site_data = _enrich_site_crawl_meta(db_client, site_data)
         return Site.from_dict(site_data)
     except HTTPException:
         raise

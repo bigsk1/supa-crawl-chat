@@ -33,23 +33,30 @@ const apiClient = axios.create({
   },
 });
 
-// Minimal logging to prevent console spam
-// Only log errors and important operations
-const IMPORTANT_ENDPOINTS = ['/chat/', '/crawl/'];
+// Minimal logging — avoid spam on frequently polled paths (e.g. crawl job status).
+function shouldLogApiRequest(url: string | undefined, method: string | undefined): boolean {
+  if (!url) return false;
+  if (method && method.toLowerCase() !== 'get') return true;
+  if (url.includes('/crawl/status') || url.includes('/crawl/activity')) return false;
+  if (url.includes('/chat/')) return true;
+  if (url.includes('/crawl')) return true;
+  return false;
+}
 
 // Add request interceptor with caching for GET requests
 apiClient.interceptors.request.use(async (request) => {
-  // Only log POST/PUT/DELETE requests or important endpoints
-  const isImportantEndpoint = IMPORTANT_ENDPOINTS.some(endpoint =>
-    request.url?.includes(endpoint)
-  );
-
-  if (request.method !== 'get' || isImportantEndpoint) {
+  if (shouldLogApiRequest(request.url, request.method)) {
     console.log(`API Request: ${request.method?.toUpperCase()} ${request.url}`);
   }
 
+  // Never cache live crawl dashboards — polling must see fresh job state
+  const skipCache =
+    request.method === 'get' &&
+    request.url &&
+    (request.url.includes('/crawl/status') || request.url.includes('/crawl/activity'));
+
   // Check cache for GET requests
-  if (request.method === 'get' && request.url) {
+  if (request.method === 'get' && request.url && !skipCache) {
     const cacheKey = `${request.url}${JSON.stringify(request.params || {})}`;
     const cachedResponse = apiCache[cacheKey];
 
@@ -80,17 +87,17 @@ apiClient.interceptors.request.use(async (request) => {
 // Add response interceptor with caching
 apiClient.interceptors.response.use(
   response => {
-    // Only log responses for non-GET requests or important endpoints
-    const isImportantEndpoint = IMPORTANT_ENDPOINTS.some(endpoint =>
-      response.config.url?.includes(endpoint)
-    );
-
-    if (response.config.method !== 'get' || isImportantEndpoint) {
+    if (shouldLogApiRequest(response.config.url, response.config.method)) {
       console.log(`API Response: ${response.status} ${response.config.url}`);
     }
 
-    // Cache successful GET responses
-    if (response.config.method === 'get' && response.config.url) {
+    // Cache successful GET responses (skip volatile crawl status)
+    if (
+      response.config.method === 'get' &&
+      response.config.url &&
+      !response.config.url.includes('/crawl/status') &&
+      !response.config.url.includes('/crawl/activity')
+    ) {
       const url = response.config.url;
       const cacheKey = `${url}${JSON.stringify(response.config.params || {})}`;
 
@@ -130,6 +137,11 @@ export interface Site {
   description: string;
   page_count: number;
   created_at: string;
+  updated_at?: string | null;
+  /** Latest finished crawl job time, or started_at while queued/running */
+  last_crawled_at?: string | null;
+  /** Latest crawl_jobs.status for this site, if any */
+  crawl_job_status?: string | null;
 }
 
 // Page interfaces
@@ -391,6 +403,12 @@ export const apiService = {
       console.error('Error starting crawl:', error);
       throw error;
     }
+  },
+
+  /** Queue a refresh crawl for an existing site (POST /api/crawl/refresh/{site_id}). */
+  refreshSiteCrawl: async (siteId: number): Promise<CrawlResponse> => {
+    const response = await apiClient.post<CrawlResponse>(`/crawl/refresh/${siteId}`, {});
+    return response.data;
   },
 
   getCrawlStatus: async (siteId?: string | number): Promise<CrawlStatus | CrawlStatus[]> => {

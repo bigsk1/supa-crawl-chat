@@ -4,6 +4,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 import asyncio
 import os
 import sys
+import time
 import uvicorn
 from dotenv import load_dotenv
 
@@ -17,8 +18,44 @@ from api.auth import require_api_key
 from db_client import SupabaseClient
 from security_utils import UnsafeURL, env_bool, parse_csv_env, validate_fetch_url
 
+# Paths to skip in api_http lines (high frequency or static)
+_API_ACCESS_LOG_SKIP = frozenset(
+    {
+        "/api/health",
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+        "/favicon.ico",
+    }
+)
+
+
+class ApiAccessLogMiddleware(BaseHTTPMiddleware):
+    """One line per request in app.log: method path status ms (toggle with API_ACCESS_LOG)."""
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        if path in _API_ACCESS_LOG_SKIP or not env_bool("API_ACCESS_LOG", default=True):
+            return await call_next(request)
+        t0 = time.perf_counter()
+        response = await call_next(request)
+        ms = int((time.perf_counter() - t0) * 1000)
+        logger.info(
+            "api_http %s %s -> %s %sms",
+            request.method,
+            path,
+            getattr(response, "status_code", "?"),
+            ms,
+        )
+        return response
+
 # Load environment variables
 load_dotenv()
+
+from app_logging import configure_logging, get_logger
+
+configure_logging()
+logger = get_logger(__name__)
 
 # Custom middleware to handle trailing slashes
 class TrailingSlashMiddleware(BaseHTTPMiddleware):
@@ -27,7 +64,7 @@ class TrailingSlashMiddleware(BaseHTTPMiddleware):
         if request.url.path != "/" and request.url.path.endswith("/"):
             # Simply modify the request scope directly
             path_without_slash = request.url.path.rstrip("/")
-            print(f"Removing trailing slash: {request.url.path} -> {path_without_slash}")
+            logger.debug("Removing trailing slash: %s -> %s", request.url.path, path_without_slash)
 
             # Modify the request path in the scope
             request.scope["path"] = path_without_slash
@@ -44,20 +81,21 @@ class TrailingSlashMiddleware(BaseHTTPMiddleware):
 
         # Ensure we don't return 307 redirects for trailing slashes
         if response.status_code == 307 and response.headers.get("location", "").endswith("/"):
-            print(f"Preventing 307 redirect for path: {request.url.path}")
+            logger.debug("Preventing 307 redirect for path: %s", request.url.path)
             # Create a new response with the same content but status code 200
             return await call_next(request)
 
         return response
 
-# Create FastAPI app
+# Create FastAPI app (no global API key: /api/health must stay reachable for Docker/orchestrator probes)
+_api_key_dep = [Depends(require_api_key)]
+
 app = FastAPI(
     title="Supa-Crawl-Chat API",
     description="API for Supa-Crawl-Chat - A web crawling and semantic search solution with chat capabilities",
     version="1.0.0",
     # Disable automatic redirection for trailing slashes since we handle it in middleware
     redirect_slashes=False,
-    dependencies=[Depends(require_api_key)],
 )
 
 # Add trailing slash middleware first
@@ -76,6 +114,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.add_middleware(ApiAccessLogMiddleware)
+
 # Include routers
 # print("Registering routers...")
 # print(f"Search router: {search.router}")
@@ -84,11 +124,19 @@ app.add_middleware(
 # print(f"Sites router: {sites.router}")
 # print(f"Pages router: {pages.router}")
 
-app.include_router(search.router, prefix="/api/search", tags=["search"])
-app.include_router(crawl.router, prefix="/api/crawl", tags=["crawl"])
-app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
-app.include_router(sites.router, prefix="/api/sites", tags=["sites"])
-app.include_router(pages.router, prefix="/api/pages", tags=["pages"])
+app.include_router(search.router, prefix="/api/search", tags=["search"], dependencies=_api_key_dep)
+# Alias for tools / local clients that expect GET .../query?query=...
+app.include_router(
+    search.router,
+    prefix="/api/query",
+    tags=["search"],
+    include_in_schema=False,
+    dependencies=_api_key_dep,
+)
+app.include_router(crawl.router, prefix="/api/crawl", tags=["crawl"], dependencies=_api_key_dep)
+app.include_router(chat.router, prefix="/api/chat", tags=["chat"], dependencies=_api_key_dep)
+app.include_router(sites.router, prefix="/api/sites", tags=["sites"], dependencies=_api_key_dep)
+app.include_router(pages.router, prefix="/api/pages", tags=["pages"], dependencies=_api_key_dep)
 
 @app.get("/api")
 async def root():
@@ -131,13 +179,14 @@ async def root():
             "search": {
                 "base": "/api/search",
                 "routes": [
-                    {"method": "GET", "path": "/api/search", "note": "Semantic / text search (query, site_id, …)"},
+                    {"method": "GET", "path": "/api/search", "note": "Semantic / text search (required query param: query)"},
+                    {"method": "GET", "path": "/api/query", "note": "Same handler as /api/search (alias for tools)"},
                 ],
             },
             "chat": {
                 "base": "/api/chat",
                 "routes": [
-                    {"method": "POST", "path": "/api/chat", "note": "Chat + RAG (body: message, session_id, user_id, profile)"},
+                    {"method": "POST", "path": "/api/chat", "note": "Chat + RAG + optional Brave; server uses .env (CHAT_MAX_COMPLETION_TOKENS, CHAT_MODEL, BRAVE_*). Body: message, session_id, user_id, profile"},
                     {"method": "GET", "path": "/api/chat/profiles", "note": "List chat profiles"},
                     {"method": "POST", "path": "/api/chat/profiles/{profile_name}", "note": "Set active profile"},
                     {"method": "GET", "path": "/api/chat/history", "note": "Conversation history"},
@@ -158,7 +207,7 @@ async def ensure_runtime_schema():
     try:
         SupabaseClient().ensure_runtime_schema()
     except Exception as exc:
-        print(f"Runtime schema check skipped: {exc}")
+        logger.warning("Runtime schema check skipped: %s", exc)
 
 
 def _auto_refresh_once() -> None:
@@ -179,7 +228,7 @@ def _auto_refresh_once() -> None:
         try:
             url = validate_fetch_url(site["url"], purpose="auto refresh")
         except UnsafeURL as exc:
-            print(f"Skipping auto-refresh for site {site.get('id')}: {exc}")
+            logger.warning("Skipping auto-refresh for site %s: %s", site.get("id"), exc)
             continue
 
         lower_url = url.lower()
@@ -203,6 +252,7 @@ def _auto_refresh_once() -> None:
             max_urls,
             {},
             job_id,
+            site.get("id"),
         )
 
 
@@ -216,7 +266,7 @@ async def _auto_refresh_loop() -> None:
         try:
             await asyncio.to_thread(_auto_refresh_once)
         except Exception as exc:
-            print(f"Auto-refresh pass failed: {exc}")
+            logger.exception("Auto-refresh pass failed: %s", exc)
         await asyncio.sleep(interval_seconds)
 
 
@@ -226,7 +276,7 @@ async def start_auto_refresh_loop():
         return
     task = asyncio.create_task(_auto_refresh_loop())
     app.state.auto_refresh_task = task
-    print("Auto-refresh scheduler enabled")
+    logger.info("Auto-refresh scheduler enabled")
 
 
 @app.on_event("shutdown")

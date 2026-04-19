@@ -9,6 +9,10 @@ from crawler import WebCrawler
 # Load environment variables
 load_dotenv()
 
+from app_logging import configure_logging
+
+configure_logging()
+
 def run_crawl():
     """Run a crawl using the configuration from the .env file."""
     # Get configuration from .env

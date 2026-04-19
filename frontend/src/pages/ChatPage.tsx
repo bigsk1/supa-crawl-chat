@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import toast from 'react-hot-toast';
 import { ChatMessage, Profile } from '@/api/apiService';
-import { api } from '@/api/apiWrapper';
+import { api, isSimpleGreetingMessage } from '@/api/apiWrapper';
 import { v4 as uuidv4 } from 'uuid';
 import { useUser } from '@/context/UserContext';
 import { Button } from '@/components/ui/button';
@@ -274,16 +274,7 @@ const ChatPage = () => {
   const handleSendMessage = async () => {
     if (!message.trim()) return;
     
-    // Check if this is a simple greeting
-    const greeting_patterns = [
-      'hi', 'hello', 'hey', 'greetings', 'howdy', 'hola',
-      'how are you', "how's it going", 'hows it going', "what's up", 'whats up',
-      'whats going on', "what's going on",
-      'sup', 'good morning', 'good afternoon', 'good evening',
-    ];
-
-    const clean_message = message.trim().toLowerCase();
-    const is_greeting = greeting_patterns.some((greeting) => clean_message.includes(greeting));
+    const is_greeting = isSimpleGreetingMessage(message);
     
     setIsLoading(true);
     
@@ -317,6 +308,38 @@ const ChatPage = () => {
       };
       
       setChatHistory(prev => [...prev, assistantMessage]);
+
+      // Show Brave web retrieval in UI (API returns brave_preview; LLM also received this as inject)
+      const rw = response as {
+        brave_used?: boolean;
+        brave_preview?: string;
+        brave_sources?: { url?: string; title?: string }[];
+      };
+      if (
+        rw.brave_used &&
+        (rw.brave_preview?.trim() ||
+          (Array.isArray(rw.brave_sources) && rw.brave_sources.length > 0))
+      ) {
+        let braveText =
+          '===== BRAVE WEB CONTEXT (Brave Search LLM API) =====\n\n';
+        if (rw.brave_preview?.trim()) {
+          braveText += rw.brave_preview;
+        } else if (rw.brave_sources?.length) {
+          braveText += rw.brave_sources
+            .map(
+              (s) =>
+                `TITLE: ${s.title || 'Untitled'}\nURL: ${s.url || ''}\n`
+            )
+            .join('\n');
+        }
+        const braveMessage: Message = {
+          id: (Date.now() + 3).toString(),
+          role: 'system',
+          content: braveText,
+          created_at: new Date().toISOString(),
+        };
+        setChatHistory((prev) => [...prev, braveMessage]);
+      }
 
       if (userProfile?.name?.trim()) {
         apiService
@@ -462,6 +485,7 @@ const ChatPage = () => {
       message.content.includes("EXACT KEYWORD MATCHES") ||
       message.content.includes("VERIFIED DATABASE SEARCH RESULTS") ||
       message.content.includes("RELEVANT URLS") ||
+      message.content.includes("===== BRAVE WEB") ||
       message.content.includes("===== ")
     ))
   );
@@ -469,6 +493,7 @@ const ChatPage = () => {
   // Render system messages with context differently
   const renderMessage = (message: Message) => {
     if (message.role === 'system' && message.content) {
+      const isBraveWeb = message.content.includes("===== BRAVE WEB");
       // Check if this is a search results message
       const isSearchResults = 
         message.content.includes("DATABASE SEARCH RESULTS") || 
@@ -477,6 +502,30 @@ const ChatPage = () => {
         message.content.includes("VERIFIED DATABASE SEARCH RESULTS") ||
         message.content.includes("RELEVANT URLS") ||
         message.content.includes("===== ");
+
+      if (isBraveWeb) {
+        const urlMatch = message.content.match(/https?:\/\/[^\s)]+/);
+        const mainUrl = urlMatch ? urlMatch[0] : '';
+        return (
+          <div className="mb-4 px-4">
+            <details className="bg-blue-950/20 border border-blue-500/30 rounded-lg p-2">
+              <summary className="cursor-pointer font-medium text-sm text-blue-200 flex items-center">
+                <MessageSquare className="inline-block mr-2 h-4 w-4" />
+                <span>Brave Search — web context</span>
+                {mainUrl && (
+                  <span className="ml-2 text-xs opacity-80 truncate max-w-[200px]">
+                    {mainUrl}
+                  </span>
+                )}
+                <span className="ml-2 text-xs opacity-70">(expand)</span>
+              </summary>
+              <div className="mt-2 text-xs whitespace-pre-wrap overflow-auto max-h-96 p-2">
+                {message.content}
+              </div>
+            </details>
+          </div>
+        );
+      }
       
       if (isSearchResults) {
         // Extract the first URL from the message to highlight as the main source

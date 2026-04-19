@@ -13,6 +13,10 @@ from chat import ChatBot
 # Load environment variables
 load_dotenv()
 
+from app_logging import configure_logging
+
+configure_logging()
+
 def crawl_command(args):
     """Handle the crawl command."""
     crawler = WebCrawler()

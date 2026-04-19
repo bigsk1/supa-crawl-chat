@@ -1,0 +1,56 @@
+# Used when build context is the repo root (docker-compose: context: ..)
+# See docker/docker-compose.yml
+
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environment (host)
+venv/
+.venv/
+ENV/
+
+# Secrets / local env (compose mounts .env at runtime; do not bake into image)
+.env
+.env.example
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Large / generated (keep build context small)
+frontend/node_modules/
+log/
+data/
+*.db
+*.sqlite3
+*.log

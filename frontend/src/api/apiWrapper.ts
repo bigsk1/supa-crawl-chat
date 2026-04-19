@@ -10,6 +10,35 @@ const jsonHeaders = () => ({
   ...(API_KEY ? { 'x-api-key': API_KEY } : {}),
 });
 
+/** Align with api/routers/chat.py `_is_simple_greeting_message`: word boundaries (not "hi" inside "Hillsboro") + max words. */
+const CHAT_GREETING_MAX_WORDS = 12;
+
+export function isSimpleGreetingMessage(message: string): boolean {
+  const clean = message.trim().toLowerCase();
+  if (!clean) return false;
+  if (clean.split(/\s+/).length > CHAT_GREETING_MAX_WORDS) return false;
+  const patterns: RegExp[] = [
+    /\bhi\b/,
+    /\bhello\b/,
+    /\bhey\b/,
+    /\bgreetings\b/,
+    /\bhowdy\b/,
+    /\bhola\b/,
+    /\bhow\s+are\s+you\b/,
+    /\bhow's\s+it\s+going\b/,
+    /\bhows\s+it\s+going\b/,
+    /\bwhat's\s+up\b/,
+    /\bwhats\s+up\b/,
+    /\bwhat's\s+going\s+on\b/,
+    /\bwhats\s+going\s+on\b/,
+    /\bsup\b/,
+    /\bgood\s+morning\b/,
+    /\bgood\s+afternoon\b/,
+    /\bgood\s+evening\b/,
+  ];
+  return patterns.some((re) => re.test(clean));
+}
+
 // Create a wrapper around the API service that integrates our notification system
 export const api = {
   // Site methods
@@ -120,15 +149,7 @@ export const api = {
     user_id?: string,
     session_id?: string
   ): Promise<any> => {
-    const greeting_patterns = [
-      'hi', 'hello', 'hey', 'greetings', 'howdy', 'hola',
-      'how are you', "how's it going", 'hows it going', "what's up", 'whats up',
-      'whats going on', "what's going on",
-      'sup', 'good morning', 'good afternoon', 'good evening',
-    ];
-
-    const clean_message = message.trim().toLowerCase();
-    const is_greeting = greeting_patterns.some(greeting => clean_message.includes(greeting));
+    const is_greeting = isSimpleGreetingMessage(message);
 
     // Try both versions of the URL (with and without trailing slash)
     const urls = [

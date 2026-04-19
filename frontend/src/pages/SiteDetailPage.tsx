@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { apiService, Site, Page } from '@/api/apiService';
@@ -56,6 +56,19 @@ const SiteDetailPage = () => {
   const [expandedPageIds, setExpandedPageIds] = useState<number[]>([]);
   const [isSorting, setIsSorting] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
+  const [recrawlBusy, setRecrawlBusy] = useState(false);
+  const recrawlPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stopRecrawlPoll = () => {
+    if (recrawlPollRef.current) {
+      clearInterval(recrawlPollRef.current);
+      recrawlPollRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    return () => stopRecrawlPoll();
+  }, []);
 
   useEffect(() => {
     if (!siteId) return;
@@ -234,6 +247,67 @@ const SiteDetailPage = () => {
     } catch (error) {
       console.error('Error checking API directly:', error);
       createNotification('Error', 'Failed to check API directly', 'error', true);
+    }
+  };
+
+  const handleRecrawlSite = async () => {
+    if (!siteId || recrawlBusy) return;
+    const id = parseInt(siteId, 10);
+    if (Number.isNaN(id)) return;
+    stopRecrawlPoll();
+    setRecrawlBusy(true);
+    try {
+      await apiService.refreshSiteCrawl(id);
+      toast.success('Recrawl started — fetching new content from the web', {
+        id: 'site-recrawl',
+        duration: 4000,
+      });
+      let ticks = 0;
+      const norm = (v: unknown) =>
+        typeof v === 'string' ? v.trim().toLowerCase() : '';
+      const pollOnce = async () => {
+        ticks += 1;
+        if (ticks > 150) {
+          stopRecrawlPoll();
+          setRecrawlBusy(false);
+          toast('Crawl is taking a while — use Refresh Data to check status.', {
+            id: 'site-recrawl-timeout',
+            duration: 5000,
+          });
+          return;
+        }
+        try {
+          const raw = (await apiService.getCrawlStatus(id)) as Record<string, unknown>;
+          const job = raw.job as Record<string, unknown> | null | undefined;
+          const jobSt = norm(job?.status);
+          const topSt = norm(raw.status);
+          const st = jobSt || topSt;
+          if (st === 'completed') {
+            stopRecrawlPoll();
+            setRecrawlBusy(false);
+            toast.success('Recrawl finished', { id: 'site-recrawl-done', duration: 3000 });
+            await loadSiteDetails(id, { notifySuccess: false });
+          } else if (st === 'failed') {
+            stopRecrawlPoll();
+            setRecrawlBusy(false);
+            toast.error('Recrawl failed — check server logs or crawl job in the API', {
+              id: 'site-recrawl-fail',
+              duration: 5000,
+            });
+            await loadSiteDetails(id, { notifySuccess: false });
+          }
+        } catch {
+          /* transient poll errors ignored */
+        }
+      };
+      void pollOnce();
+      recrawlPollRef.current = setInterval(() => {
+        void pollOnce();
+      }, 4000);
+    } catch (e) {
+      console.error(e);
+      setRecrawlBusy(false);
+      toast.error('Could not start recrawl', { id: 'site-recrawl-err', duration: 4000 });
     }
   };
 
@@ -908,14 +982,47 @@ const SiteDetailPage = () => {
               </div>
             )}
 
-            <div className="grid grid-cols-1 gap-4 text-sm text-gray-600 dark:text-gray-400">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm text-gray-600 dark:text-gray-400">
               <div>
                 <span className="font-medium">Created: </span>
                 {formatDate(site.created_at)}
               </div>
+              <div>
+                <span className="font-medium">Last crawl: </span>
+                {site.last_crawled_at ? formatDate(site.last_crawled_at) : '—'}
+                {site.crawl_job_status && ['queued', 'running'].includes(site.crawl_job_status) && (
+                  <span className="ml-2 text-xs text-amber-600 dark:text-amber-400">
+                    ({site.crawl_job_status})
+                  </span>
+                )}
+              </div>
             </div>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-500">
+              Last crawl is from the latest crawl job (finished time, or start time while queued/running). With auto-refresh off, use Recrawl site to pull new content.
+            </p>
 
-            <div className="mt-4 flex gap-2">
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void handleRecrawlSite()}
+                disabled={recrawlBusy}
+                className="text-xs bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-200 dark:hover:bg-emerald-800/50 px-3 py-1 rounded-md flex items-center disabled:opacity-60 disabled:cursor-not-allowed"
+                title="Queue a full refresh crawl from the live site (POST /api/crawl/refresh)"
+              >
+                {recrawlBusy ? (
+                  <>
+                    <span className="mr-1 inline-block h-3 w-3 animate-spin rounded-full border-2 border-emerald-700 border-t-transparent" />
+                    Recrawl in progress…
+                  </>
+                ) : (
+                  <>
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                    Recrawl site
+                  </>
+                )}
+              </button>
               <button
                 onClick={checkApiDirectly}
                 className="text-xs bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 px-3 py-1 rounded-md flex items-center"

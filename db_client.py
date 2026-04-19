@@ -1131,6 +1131,59 @@ class SupabaseClient:
             print_error(f"Error getting latest crawl job for site {site_id}: {e}")
             return None
 
+    def get_latest_crawl_job_per_site(self) -> Dict[int, Dict[str, Any]]:
+        """Latest crawl_jobs row per site (one query). Used for crawl activity dashboard."""
+        out: Dict[int, Dict[str, Any]] = {}
+        try:
+            self.ensure_runtime_schema()
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT DISTINCT ON (site_id)
+                            id, site_id, url, status, options, crawl4ai_task_id,
+                            pages_found, pages_crawled, chunks_created, error,
+                            started_at, finished_at, updated_at
+                        FROM crawl_jobs
+                        ORDER BY site_id, updated_at DESC, id DESC
+                        """
+                    )
+                    columns = [d[0] for d in cur.description]
+                    for row in cur.fetchall():
+                        job = dict(zip(columns, row))
+                        sid = int(job["site_id"])
+                        for field in ("started_at", "finished_at", "updated_at"):
+                            if job.get(field) is not None and not isinstance(job[field], str):
+                                job[field] = job[field].isoformat()
+                        out[sid] = job
+            return out
+        except Exception as e:
+            print_error(f"Error in get_latest_crawl_job_per_site: {e}")
+            return {}
+
+    def get_crawl_page_counts_by_site(self) -> Dict[int, Dict[str, int]]:
+        """Parent page count and total row count per site_id (one query)."""
+        out: Dict[int, Dict[str, int]] = {}
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT site_id,
+                            COALESCE(SUM(CASE WHEN is_chunk = false THEN 1 ELSE 0 END), 0)::bigint AS parent_n,
+                            COUNT(*)::bigint AS total_n
+                        FROM crawl_pages
+                        GROUP BY site_id
+                        """
+                    )
+                    for row in cur.fetchall():
+                        sid = int(row[0])
+                        out[sid] = {"parent": int(row[1]), "total": int(row[2])}
+            return out
+        except Exception as e:
+            print_error(f"Error in get_crawl_page_counts_by_site: {e}")
+            return {}
+
     def get_sites_due_for_refresh(self, stale_after_days: int = 30, limit: int = 5) -> List[Dict[str, Any]]:
         """Return sites without active jobs whose latest crawl activity is stale."""
         stale_after_days = max(1, int(stale_after_days))

@@ -1,5 +1,6 @@
 import os
 import base64
+import logging
 import time
 import json
 import requests
@@ -8,6 +9,8 @@ from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 def _crawl4ai_request_headers(
@@ -62,6 +65,23 @@ def _crawl4ai_request_headers(
         )
 
     return headers
+
+
+def _status_token(status: Any) -> str:
+    """Normalize TaskStatus or string to a lowercase token (e.g. completed, failed)."""
+    if status is None:
+        return ""
+    s = str(status).strip().lower()
+    if "." in s:
+        s = s.rsplit(".", 1)[-1]
+    return s
+
+
+def _is_sync_crawl_result(data: Dict[str, Any]) -> bool:
+    """Crawl4AI 0.8+ POST /crawl returns the full crawl payload immediately (no task_id)."""
+    if not isinstance(data, dict):
+        return False
+    return data.get("success") is True and isinstance(data.get("results"), list)
 
 
 class Crawl4AIClient:
@@ -266,7 +286,13 @@ class Crawl4AIClient:
             # Check if the request was successful
             if response.status_code == 200:
                 result = response.json()
-                print(f"Successfully started crawl task with ID: {result.get('task_id')}")
+                if result.get("task_id"):
+                    print(f"Async crawl queued, task_id={result.get('task_id')}")
+                elif _is_sync_crawl_result(result):
+                    n = len(result.get("results") or [])
+                    print(f"Synchronous crawl finished ({n} result(s); no task_id — Crawl4AI 0.8+)")
+                else:
+                    print(f"Crawl4AI POST /crawl response keys: {list(result.keys())}")
                 return result
             else:
                 error_message = f"Failed to start crawl task: {response.text}"
@@ -288,7 +314,13 @@ class Crawl4AIClient:
 
                 if response.status_code == 200:
                     result = response.json()
-                    print(f"Successfully started crawl task with simplified payload. Task ID: {result.get('task_id')}")
+                    if result.get("task_id"):
+                        print(f"Async crawl queued (simple payload), task_id={result.get('task_id')}")
+                    elif _is_sync_crawl_result(result):
+                        print(
+                            f"Synchronous crawl OK (simple payload), "
+                            f"{len(result.get('results') or [])} result(s)"
+                        )
                     return result
                 else:
                     raise Exception(f"Failed to start crawl task with simplified payload: {response.text}")
@@ -301,33 +333,39 @@ class Crawl4AIClient:
     def get_task_status(self, task_id: str) -> Dict[str, Any]:
         """Get the status of a crawl task.
 
+        Crawl4AI 0.8+ uses GET /crawl/job/{task_id}; older deployments used GET /task/{task_id}.
+
         Args:
             task_id: The ID of the task to check.
 
         Returns:
             Dict containing the task status and results if available.
         """
-        try:
-            # Try v0.5.0 endpoint format
-            endpoint = f"{self.base_url}/task/{task_id}"
-            print(f"Checking task status at: {endpoint}")
-
-            response = requests.get(
-                endpoint,
-                headers=self.headers,
-                timeout=self.timeout,
-            )
-
-            if response.status_code == 200:
-                return response.json()
-            else:
+        base = self.base_url.rstrip("/")
+        paths = (f"{base}/crawl/job/{task_id}", f"{base}/task/{task_id}")
+        last_error = ""
+        for endpoint in paths:
+            try:
+                logger.debug("Checking task status at: %s", endpoint)
+                response = requests.get(
+                    endpoint,
+                    headers=self.headers,
+                    timeout=self.timeout,
+                )
+                if response.status_code == 200:
+                    return response.json()
+                if response.status_code == 404:
+                    last_error = response.text
+                    continue
                 error_message = f"Failed to get task status: {response.text}"
                 print(f"Error: {error_message}")
                 raise Exception(error_message)
-        except requests.RequestException as e:
-            error_message = f"Request error when checking task status: {str(e)}"
-            print(f"Error: {error_message}")
-            raise Exception(error_message)
+            except requests.RequestException as e:
+                last_error = str(e)
+                continue
+        raise Exception(
+            f"Task {task_id} not found at /crawl/job or /task. Last error: {last_error}"
+        )
 
     def wait_for_completion(self, task_id: str, polling_interval: int = 5,
                            timeout: int = 600) -> Dict[str, Any]:
@@ -351,11 +389,17 @@ class Crawl4AIClient:
             # Get the current task status
             status_data = self.get_task_status(task_id)
 
+            st = _status_token(status_data.get("status"))
             # Check if the task has completed or failed
-            if status_data.get("status") == "completed":
-                print(f"Task {task_id} completed successfully")
+            if st == "completed":
+                logger.info("Crawl4AI task %s completed", task_id)
+                inner = status_data.get("result")
+                if isinstance(inner, dict) and "results" in inner:
+                    return inner
+                if "results" in status_data:
+                    return status_data
                 return status_data
-            elif status_data.get("status") == "failed":
+            if st == "failed":
                 error_message = f"Task {task_id} failed: {status_data.get('error', 'Unknown error')}"
                 print(f"Error: {error_message}")
                 raise Exception(error_message)
@@ -363,9 +407,8 @@ class Crawl4AIClient:
             # Wait before checking again
             time.sleep(polling_interval)
 
-            # Print a status update
             elapsed = time.time() - start_time
-            print(f"Task {task_id} still running after {elapsed:.1f} seconds...")
+            logger.debug("Task %s still running after %.1fs", task_id, elapsed)
 
     def crawl_and_wait(self, urls: Union[str, List[str]], **kwargs) -> Dict[str, Any]:
         """Start a crawl task and wait for it to complete.
@@ -399,14 +442,19 @@ class Crawl4AIClient:
         # Start the crawl task
         try:
             task_data = self.start_crawl(urls, **kwargs)
-            task_id = task_data.get("task_id")
 
+            # Crawl4AI 0.8+: POST /crawl returns { success, results, ... } immediately (no task_id).
+            if _is_sync_crawl_result(task_data):
+                return task_data
+
+            task_id = task_data.get("task_id")
             if not task_id:
-                raise ValueError("No task_id returned from start_crawl")
+                raise ValueError(
+                    "Unexpected Crawl4AI response: expected task_id (async job) or "
+                    f"success+results (sync). Keys: {list(task_data.keys())}"
+                )
 
             print(f"Started crawl task with ID: {task_id}")
-
-            # Wait for the task to complete
             return self.wait_for_completion(task_id)
         except Exception as e:
             print(f"Error in crawl_and_wait: {e}")
@@ -415,11 +463,9 @@ class Crawl4AIClient:
             if "extraction_config" in str(e):
                 print("Trying with a simpler extraction configuration...")
                 if "extraction_config" in kwargs:
-                    # Simplify the extraction config
                     kwargs["extraction_config"] = {"type": "basic"}
-                    return self.start_crawl(urls, **kwargs)
+                    return self.crawl_and_wait(urls, **kwargs)
 
-            # Re-raise the exception
             raise
 
     def crawl_sitemap(self, sitemap_url: str, priority: int = 10, max_urls: int = 50) -> Dict[str, Any]:

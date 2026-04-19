@@ -1,10 +1,13 @@
 import datetime
+import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Body, HTTPException, Path, status
 from pydantic import BaseModel, Field, field_validator
 
+from app_logging import attach_crawl_job_logger, detach_crawl_job_logger
 from crawler import WebCrawler
+from db_client import SupabaseClient
 from security_utils import UnsafeURL, validate_fetch_url
 
 
@@ -156,9 +159,26 @@ def crawl_in_background(
     max_urls: Optional[int],
     advanced_options: Optional[Dict[str, Any]] = None,
     job_id: Optional[int] = None,
+    queue_site_id: Optional[int] = None,
 ) -> None:
+    """
+    queue_site_id is the site row when the job was queued (for log filenames and tracing).
+    """
     crawler: Optional[WebCrawler] = None
+    jlog: Optional[logging.Logger] = None
+    jfh: Optional[logging.Handler] = None
     try:
+        if job_id:
+            jlog, jfh, crawl_log_path = attach_crawl_job_logger(job_id, queue_site_id)
+            jlog.info(
+                "crawl_started job_id=%s queue_site_id=%s url=%s is_sitemap=%s log_file=%s",
+                job_id,
+                queue_site_id,
+                url,
+                is_sitemap,
+                crawl_log_path,
+            )
+
         crawler = WebCrawler()
         if job_id:
             crawler.db_client.update_crawl_job(job_id, status="running", error=None)
@@ -206,6 +226,20 @@ def crawl_in_background(
                 finished_at=datetime.datetime.now(datetime.timezone.utc),
             )
 
+        site_row = crawler.db_client.get_site_by_id(site_id) or {}
+        finished_utc = datetime.datetime.now(datetime.timezone.utc)
+        if jlog:
+            jlog.info(
+                "crawl_completed job_id=%s site_id=%s pages=%s chunks=%s "
+                "site_updated_at_db=%s finished_utc=%s",
+                job_id,
+                site_id,
+                page_count,
+                chunk_count,
+                site_row.get("updated_at"),
+                finished_utc.isoformat(),
+            )
+
         print("\n" + "=" * 80)
         print("CRAWL COMPLETED SUCCESSFULLY")
         print("=" * 80)
@@ -217,6 +251,8 @@ def crawl_in_background(
         print(f"To search content: GET /api/search/?query=your_query&site_id={site_id}")
         print("=" * 80 + "\n")
     except Exception as exc:
+        if jlog:
+            jlog.exception("crawl_failed job_id=%s site_id_hint=%s", job_id, queue_site_id)
         print(f"Error in background crawl task: {exc}")
         if job_id:
             try:
@@ -229,6 +265,9 @@ def crawl_in_background(
                 )
             except Exception:
                 pass
+    finally:
+        if jlog is not None and jfh is not None:
+            detach_crawl_job_logger(jlog, jfh)
 
 
 @router.post("", response_model=CrawlResponse)
@@ -257,6 +296,7 @@ async def crawl(
             crawl_data.max_urls,
             advanced_options,
             job_id,
+            site_id,
         )
 
         site = crawler.db_client.get_site_by_id(site_id) or {}
@@ -278,18 +318,62 @@ async def crawl(
         )
 
 
+@router.get("/activity", response_model=Dict[str, Any])
+async def crawl_activity_board():
+    """
+    Single response for the Crawl page: all sites with latest job + page counts.
+    Avoids N+1 GET /crawl/status requests from the browser.
+    """
+    try:
+        db_client = SupabaseClient()
+        sites = db_client.get_all_sites()
+        jobs_by_site = db_client.get_latest_crawl_job_per_site()
+        counts_by_site = db_client.get_crawl_page_counts_by_site()
+        rows: List[Dict[str, Any]] = []
+        for site in sites:
+            sid = int(site["id"])
+            job = jobs_by_site.get(sid)
+            c = counts_by_site.get(sid, {"parent": 0, "total": 0})
+            parent = int(c["parent"])
+            total = int(c["total"])
+            chunk = max(0, total - parent)
+            status_val = (job.get("status") if job else None) or "completed"
+            rows.append(
+                {
+                    "site_id": sid,
+                    "site_name": site.get("name", ""),
+                    "url": site.get("url", ""),
+                    "created_at": site.get("created_at", ""),
+                    "updated_at": site.get("updated_at", ""),
+                    "page_count": parent,
+                    "chunk_count": chunk,
+                    "total_count": total,
+                    "status": status_val,
+                    "job": job,
+                    "next_steps": _next_steps(sid),
+                }
+            )
+        return {"sites": rows, "count": len(rows)}
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error building crawl activity: {exc}",
+        )
+
+
 @router.get("/status/{site_id}", response_model=Dict[str, Any])
 async def crawl_status(site_id: int = Path(..., description="The ID of the site")):
     try:
-        crawler = WebCrawler()
-        site = crawler.db_client.get_site_by_id(site_id)
+        # DB only — avoid constructing WebCrawler (Crawl4AI + embeddings) on every poll.
+        db_client = SupabaseClient()
+        site = db_client.get_site_by_id(site_id)
         if not site:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Site with ID {site_id} not found")
 
-        total_count = crawler.db_client.get_page_count_by_site_id(site_id, include_chunks=True)
-        page_count = crawler.db_client.get_page_count_by_site_id(site_id, include_chunks=False)
+        total_count = db_client.get_page_count_by_site_id(site_id, include_chunks=True)
+        page_count = db_client.get_page_count_by_site_id(site_id, include_chunks=False)
         chunk_count = total_count - page_count
-        latest_job = crawler.db_client.get_latest_crawl_job_by_site_id(site_id)
+        latest_job = db_client.get_latest_crawl_job_by_site_id(site_id)
 
         return {
             "site_id": site_id,
@@ -344,6 +428,7 @@ async def refresh_site(
             refresh_data.max_urls,
             advanced_options,
             job_id,
+            site_id,
         )
 
         return CrawlResponse(
@@ -409,6 +494,7 @@ async def refresh_stale_sites(
                 refresh_data.max_urls,
                 {},
                 job_id,
+                site["id"],
             )
             queued.append(
                 {

@@ -1,13 +1,58 @@
 from fastapi import APIRouter, Body, Query, HTTPException, status, Path, Depends
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
+import os
+import re
+import time
 import uuid
 
 # Import from main project
+from app_logging import get_logger
 from chat import ChatBot
+from brave_llm_context import (
+    brave_ui_payload,
+    fetch_llm_context,
+    format_grounding_for_prompt,
+    should_merge_brave,
+)
+
+logger = get_logger(__name__)
 
 # Create router
 router = APIRouter()
+
+
+def _is_simple_greeting_message(text: str) -> bool:
+    """
+    Short small-talk only (word boundaries — substring 'hi' must NOT match inside 'Hillsboro').
+    Long questions are never treated as greetings so RAG/Brave still run.
+    """
+    clean = (text or "").strip().lower()
+    if not clean:
+        return False
+    max_words = max(3, int(os.getenv("CHAT_GREETING_MAX_WORDS", "12")))
+    if len(clean.split()) > max_words:
+        return False
+    patterns = (
+        r"\bhi\b",
+        r"\bhello\b",
+        r"\bhey\b",
+        r"\bgreetings\b",
+        r"\bhowdy\b",
+        r"\bhola\b",
+        r"\bhow\s+are\s+you\b",
+        r"\bhow's\s+it\s+going\b",
+        r"\bhows\s+it\s+going\b",
+        r"\bwhat's\s+up\b",
+        r"\bwhats\s+up\b",
+        r"\bwhat's\s+going\s+on\b",
+        r"\bwhats\s+going\s+on\b",
+        r"\bsup\b",
+        r"\bgood\s+morning\b",
+        r"\bgood\s+afternoon\b",
+        r"\bgood\s+evening\b",
+    )
+    return any(re.search(p, clean) for p in patterns)
 
 # Define models
 class Message(BaseModel):
@@ -38,6 +83,9 @@ class ChatResponse(BaseModel):
     user_id: Optional[str] = None
     context: Optional[List[Dict[str, Any]]] = None
     conversation_history: Optional[List[Message]] = None
+    brave_used: bool = False
+    brave_sources: Optional[List[Dict[str, Any]]] = None
+    brave_preview: Optional[str] = None
 
 class ProfileResponse(BaseModel):
     name: str
@@ -134,6 +182,12 @@ async def chat(
     - **user_id**: User ID for tracking conversations
     - **profile**: Profile to use
     """
+    t0 = time.perf_counter()
+    preview_n = max(0, int(os.getenv("CHAT_LOG_PREVIEW_CHARS", "0")))
+    brave_used = False
+    brave_chars = 0
+    brave_sources: Optional[List[Dict[str, Any]]] = None
+    brave_preview: Optional[str] = None
     try:
         # Generate a session ID if not provided
         session_id = chat_request.session_id or str(uuid.uuid4())
@@ -154,20 +208,11 @@ async def chat(
             chat_bot.load_conversation_history()
             is_first_message = len(chat_bot.conversation_history) <= 1  # Only the system message or empty
         except Exception as history_error:
-            print(f"Error loading conversation history: {history_error}")
+            logger.warning("load_conversation_history: %s", history_error)
             is_first_message = True
             
-        # Check if this is a simple greeting (before expensive retrieval)
-        greeting_patterns = [
-            "hi", "hello", "hey", "greetings", "howdy", "hola",
-            "how are you", "how's it going", "hows it going", "what's up", "whats up",
-            "whats going on", "what's going on",
-            "sup",
-            "good morning", "good afternoon", "good evening",
-        ]
-
         clean_message = chat_request.message.strip().lower()
-        is_greeting = any(g in clean_message for g in greeting_patterns)
+        is_greeting = _is_simple_greeting_message(chat_request.message)
 
         # Optional query flag from clients: skip vector search entirely (e.g. small talk)
         context = None
@@ -175,9 +220,7 @@ async def chat(
             try:
                 context = chat_bot.search_for_context(chat_request.message)
             except Exception as search_error:
-                print(f"Error in search_for_context: {search_error}")
-                import traceback
-                traceback.print_exc()
+                logger.exception("search_for_context failed: %s", search_error)
                 context = None
 
         # For greetings, avoid irrelevant RAG snippets
@@ -198,7 +241,8 @@ async def chat(
                         f"Your primary purpose is to help the user find and understand information from their crawled content. "
                         f"In your greeting, focus on the user's crawled sites and how you can help them find information. "
                         f"Do not mention unrelated topics like gardening, cooking, or ancient civilizations unless the user asks about them. "
-                        f"Suggest that the user can ask specific questions about their crawled sites."
+                        f"Suggest that the user can ask specific questions about their crawled sites.",
+                        metadata={"llm_inject": True},
                     )
             except:
                 # If we can't get sites, still avoid random topics
@@ -206,7 +250,8 @@ async def chat(
                     "This is the first message in the conversation. You are a helpful assistant that specializes in providing information about the user's crawled sites. "
                     "Your primary purpose is to help the user find and understand information from their crawled content. "
                     "In your greeting, focus on the user's crawled sites and how you can help them find information. "
-                    "Do not mention unrelated topics unless the user asks about them."
+                    "Do not mention unrelated topics unless the user asks about them.",
+                    metadata={"llm_inject": True},
                 )
         
         # Add a system message with instructions on how to use the context
@@ -217,7 +262,8 @@ async def chat(
                 "Integrate the information naturally into your responses rather than just listing sources. "
                 "If the user asks about a topic covered in their crawled sites, use that information to provide a detailed, "
                 "accurate response. Only mention that information comes from their crawled sites if it adds value to the response. "
-                "When referencing specific information, include relevant URLs as formatted links using markdown syntax: [link text](URL)."
+                "When referencing specific information, include relevant URLs as formatted links using markdown syntax: [link text](URL).",
+                metadata={"llm_inject": True},
             )
             
             # Check if this is a query about an app or specific product
@@ -230,23 +276,62 @@ async def chat(
                     "2. Key features and capabilities "
                     "3. Technical details if available "
                     "4. How to get or access the app "
-                    "Make sure to use the information from the context rather than general knowledge."
+                    "Make sure to use the information from the context rather than general knowledge.",
+                    metadata={"llm_inject": True},
                 )
+
+        # Optional Brave Search LLM Context (web grounding) — BRAVE_API_KEY + BRAVE_WEB_CONTEXT
+        if not is_greeting:
+            try:
+                brave_mode = (os.getenv("BRAVE_WEB_CONTEXT") or "when_empty").strip()
+                weak_thr = float(os.getenv("BRAVE_WEAK_THRESHOLD", "0.35"))
+                ctx_list = context if isinstance(context, list) else None
+                if should_merge_brave(
+                    brave_mode,
+                    ctx_list,
+                    weak_threshold=weak_thr,
+                    user_message=chat_request.message,
+                ):
+                    brave_data = fetch_llm_context(chat_request.message)
+                    if brave_data:
+                        g = brave_data.get("grounding") or {}
+                        gen = g.get("generic") if isinstance(g, dict) else None
+                        has_grounding = isinstance(gen, list) and len(gen) > 0
+                        has_sources = bool(
+                            isinstance(brave_data.get("sources"), dict) and brave_data["sources"]
+                        )
+                        if has_grounding or has_sources:
+                            block = format_grounding_for_prompt(brave_data)
+                            if block:
+                                brave_chars = len(block)
+                                ui = brave_ui_payload(block, brave_data)
+                                brave_preview = ui["preview"]
+                                brave_sources = ui["sources"]
+                                chat_bot.add_system_message(
+                                    "Supplemental web context from Brave Search (verify facts; prefer the user's crawled "
+                                    "sources when both apply). Use [link text](URL) when citing URLs.\n\n"
+                                    + block,
+                                    metadata={"llm_inject": True, "source": "brave_web"},
+                                )
+                                brave_used = True
+            except Exception as brave_err:
+                logger.warning("Brave LLM Context skipped: %s", brave_err)
         
         # Get response
         try:
             response = chat_bot.get_response(chat_request.message)
         except Exception as response_error:
-            print(f"Error in get_response: {response_error}")
-            import traceback
-            traceback.print_exc()
+            logger.exception("get_response failed: %s", response_error)
             response = f"I'm sorry, but I encountered an error processing your request. Error details: {str(response_error)}"
         
         # Prepare the response
         chat_response = {
             "response": response,
             "session_id": session_id,
-            "user_id": chat_request.user_id
+            "user_id": chat_request.user_id,
+            "brave_used": brave_used,
+            "brave_sources": brave_sources,
+            "brave_preview": brave_preview,
         }
         
         # Include context in the response only if it's not a greeting
@@ -268,9 +353,32 @@ async def chat(
                 ))
             
             chat_response["conversation_history"] = messages
-        
+
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        ctx_n = len(context) if isinstance(context, list) else (0 if context is None else 1)
+        preview = ""
+        if preview_n and chat_request.message:
+            preview = (chat_request.message[:preview_n].replace("\n", " ") + ("…" if len(chat_request.message) > preview_n else ""))
+        logger.info(
+            "chat_ok session=%s user=%s profile=%s greeting=%s include_ctx=%s ctx_items=%s "
+            "brave=%s brave_chars=%s msg_chars=%s reply_chars=%s ms=%s%s",
+            session_id,
+            chat_request.user_id or "-",
+            chat_request.profile or "default",
+            is_greeting,
+            include_context,
+            ctx_n,
+            brave_used,
+            brave_chars,
+            len(chat_request.message or ""),
+            len(response or ""),
+            elapsed_ms,
+            (" preview=%r" % preview) if preview else "",
+        )
+
         return chat_response
     except Exception as e:
+        logger.exception("chat_failed session=%s: %s", chat_request.session_id, e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error in chat: {str(e)}"

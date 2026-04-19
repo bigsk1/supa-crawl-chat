@@ -28,14 +28,20 @@ export default defineConfig({
         secure: false,
         rewrite: (path) => path, // Don't rewrite the path
         configure: (proxy, _options) => {
+          const noisy = (url: string | undefined) =>
+            url?.includes('/api/crawl/status') || url?.includes('/api/crawl/activity');
           proxy.on('error', (err, _req, _res) => {
             console.log('proxy error', err);
           });
-          proxy.on('proxyReq', (proxyReq, req, _res) => {
-            console.log('Sending Request:', req.method, req.url);
+          proxy.on('proxyReq', (_proxyReq, req, _res) => {
+            if (!noisy(req.url)) {
+              console.log('Sending Request:', req.method, req.url);
+            }
           });
           proxy.on('proxyRes', (proxyRes, req, _res) => {
-            console.log('Received Response:', proxyRes.statusCode, req.url);
+            if (!noisy(req.url)) {
+              console.log('Received Response:', proxyRes.statusCode, req.url);
+            }
           });
         },
       },
