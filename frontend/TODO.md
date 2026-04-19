@@ -157,70 +157,9 @@ const response = await apiClient.get(`/sites/${siteId}/pages/`);
 
 ### Backend Enhancements
 
-1. **Implement a proper `/api/pages/{pageId}` endpoint that returns full page data including content.**
-   - This endpoint should follow the trailing slash guidelines above (no trailing slash).
-   - Example implementation:
-   ```python
-   @router.get("/{page_id}", response_model=PageDetail)
-   async def get_page(page_id: int = Path(..., description="The ID of the page")):
-       """
-       Get a page by ID with full content.
-       
-       - **page_id**: The ID of the page
-       """
-       try:
-           db_client = SupabaseClient()
-           page = db_client.get_page_by_id(page_id)
-           
-           if not page:
-               raise HTTPException(
-                   status_code=status.HTTP_404_NOT_FOUND,
-                   detail=f"Page with ID {page_id} not found"
-               )
-           
-           return PageDetail.from_dict(page)
-       except HTTPException:
-           raise
-       except Exception as e:
-           raise HTTPException(
-               status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-               detail=f"Error getting page: {str(e)}"
-           )
-   ```
+1. ~~**`/api/pages/{pageId}` and chunks**~~ — **Done** (`api/routers/pages.py`): `GET /api/pages/{page_id}`, `GET /api/pages/{page_id}/chunks`, `POST /api/pages/maintenance/deduplicate`. Frontend uses `apiService.getPageById` / `getPageChunks`.
 
-2. **Add an endpoint to fetch all chunks for a specific page.**
-   - This should be implemented as a subpath of the pages endpoint.
-   - Example implementation:
-   ```python
-   @router.get("/{page_id}/chunks", response_model=ChunkList)
-   async def get_page_chunks(page_id: int = Path(..., description="The ID of the parent page")):
-       """
-       Get all chunks for a specific page.
-       
-       - **page_id**: The ID of the parent page
-       """
-       try:
-           db_client = SupabaseClient()
-           chunks = db_client.get_chunks_by_parent_id(page_id)
-           
-           if not chunks:
-               return ChunkList(chunks=[], count=0, parent_id=page_id)
-           
-           chunk_list = []
-           for chunk in chunks:
-               chunk_list.append(Chunk.from_dict(chunk))
-           
-           return ChunkList(
-               chunks=chunk_list,
-               count=len(chunk_list),
-               parent_id=page_id
-           )
-       except Exception as e:
-           raise HTTPException(
-               status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-               detail=f"Error getting page chunks: {str(e)}"
-           )
-   ```
+2. **API discoverability (non-OpenAPI)** — **Done** (`GET /api`): returns `openapi_url`, `docs_url`, and a `capabilities` map listing crawl, sites, pages, search, and chat routes so scripts and integrations can mirror the UI without hunting through `/docs`.
 
 3. **Ensure consistent metadata (created_at, updated_at) is returned for all pages.**
    - ✅ Partially implemented in the database query, but needs to be consistent across all endpoints
@@ -283,19 +222,20 @@ const response = await apiClient.get(`/sites/${siteId}/pages/`);
    - Add caching for frequently accessed data
    - Optimize API calls to reduce data transfer
 
-## Implementation Priority
+## Implementation Priority (updated 2026-04)
 
 1. ✅ Fix content display issues by improving the existing workarounds
-2. Implement backend API enhancements
-   - Add `/api/pages/{pageId}` endpoint for full page data
-   - Add `/api/pages/{pageId}/chunks` endpoint for page chunks
-   - Ensure consistent metadata across all endpoints
-3. ✅ Add chunk navigation
-4. ✅ Improve content rendering
-5. Develop database explorer features
-6. Complete user profile functionality
-7. ~~**Resolve Docker API issues** for consistent behavior across environments~~ **COMPLETED (2025-03-12)**
-8. Implement performance optimizations for large datasets
+2. ✅ Core pages API + `GET /api` capabilities map for full API-driven workflows
+3. ✅ Add chunk navigation (site detail)
+4. ✅ Improve content rendering (raw vs rendered; further polish below)
+5. **Next (highest value)**:
+   - **Content UX**: Syntax highlighting for code blocks in rendered page/chat content; stronger MIME / HTML vs markdown detection
+   - **Performance**: Virtualized lists on site detail + search when hundreds of rows; optional smaller page list payloads
+   - **Preferences UI**: Tighter integration with chat (indicators when prefs apply); optional “Memory” summary — backend already exposes `/api/chat/preferences`
+   - **Explorer**: Lightweight “embeddings / stats” view is still optional; Supabase Explorer remains the heavy option
+6. User profile: optional defaults (threshold, site filter) stored in UI only or future API
+7. ~~Docker API / trailing slash~~ **Done**
+8. Performance optimizations for large datasets (see above)
 
 ## Notes for Development
 
@@ -353,11 +293,11 @@ const response = await apiClient.get(`/sites/${siteId}/pages/`);
 
 ## Next Steps
 
-1. Implement the missing API endpoints for direct page and chunk access
-2. Enhance the content rendering with syntax highlighting and better MIME type detection
-3. Develop the database explorer features
-4. Implement performance optimizations for large datasets
-5. Complete the user profile functionality
+1. ~~Implement `/api/pages/{id}` and chunks~~ — shipped; use `GET /api` for the full route map
+2. Enhance content rendering (syntax highlighting, safer HTML, markdown tables)
+3. Virtualize long lists; reduce duplicate fetches (site detail already prefers one pages request)
+4. Optional: embedded “stats” panel (counts, last crawl) using existing `/api/sites` + search
+5. User profile: saved UI defaults (not blocking API parity)
 
 ## Implementation Notes (2025-03-14)
 

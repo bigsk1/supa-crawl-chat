@@ -6,6 +6,7 @@ import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { toast } from 'react-hot-toast';
 import { useUser } from '@/context/UserContext';
+import { PageHeader } from '@/components/PageHeader';
 
 const UserPreferencesPage: React.FC = () => {
   const { userId } = useParams<{ userId: string }>();
@@ -62,7 +63,11 @@ const UserPreferencesPage: React.FC = () => {
 
   return (
     <div className="container mx-auto px-4 py-8">
-      <h1 className="text-3xl font-bold mb-6 text-gray-200">User Preferences</h1>
+      <PageHeader
+        title="User preferences"
+        subtitle="Manage long-term memory used by chat (API: GET /api/chat/preferences)"
+        backTo="/"
+      />
       
       {!userId && (
         <Card className="mb-6 p-6 border border-gray-700 bg-gray-800">

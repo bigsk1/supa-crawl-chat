@@ -93,13 +93,64 @@ app.include_router(pages.router, prefix="/api/pages", tags=["pages"])
 @app.get("/api")
 async def root():
     """
-    Root endpoint for the API.
+    Root endpoint: service info and a stable map of HTTP routes so clients can drive the same
+    features as the web UI (discoverability without scraping OpenAPI).
     """
     return {
         "message": "Welcome to the Supa-Crawl-Chat API",
         "version": app.version,
         "docs_url": "/docs",
         "redoc_url": "/redoc",
+        "openapi_url": "/openapi.json",
+        "capabilities": {
+            "crawl": {
+                "base": "/api/crawl",
+                "routes": [
+                    {"method": "POST", "path": "/api/crawl", "note": "Start crawl (body: url, site_name, …)"},
+                    {"method": "GET", "path": "/api/crawl/status/{site_id}", "note": "Crawl / site progress"},
+                    {"method": "POST", "path": "/api/crawl/refresh/{site_id}", "note": "Re-crawl existing site"},
+                    {"method": "POST", "path": "/api/crawl/refresh-stale", "note": "Batch refresh stale sites (operator)"},
+                ],
+            },
+            "sites": {
+                "base": "/api/sites",
+                "routes": [
+                    {"method": "GET", "path": "/api/sites", "note": "List sites"},
+                    {"method": "GET", "path": "/api/sites/{site_id}", "note": "Site detail"},
+                    {"method": "GET", "path": "/api/sites/{site_id}/pages", "note": "Pages for site (include_chunks)"},
+                ],
+            },
+            "pages": {
+                "base": "/api/pages",
+                "routes": [
+                    {"method": "GET", "path": "/api/pages/{page_id}", "note": "Single page (content_chars, full)"},
+                    {"method": "GET", "path": "/api/pages/{page_id}/chunks", "note": "Chunks for parent page"},
+                    {"method": "POST", "path": "/api/pages/maintenance/deduplicate", "note": "Chunk cleanup (operator)"},
+                ],
+            },
+            "search": {
+                "base": "/api/search",
+                "routes": [
+                    {"method": "GET", "path": "/api/search", "note": "Semantic / text search (query, site_id, …)"},
+                ],
+            },
+            "chat": {
+                "base": "/api/chat",
+                "routes": [
+                    {"method": "POST", "path": "/api/chat", "note": "Chat + RAG (body: message, session_id, user_id, profile)"},
+                    {"method": "GET", "path": "/api/chat/profiles", "note": "List chat profiles"},
+                    {"method": "POST", "path": "/api/chat/profiles/{profile_name}", "note": "Set active profile"},
+                    {"method": "GET", "path": "/api/chat/history", "note": "Conversation history"},
+                    {"method": "DELETE", "path": "/api/chat/history", "note": "Clear history"},
+                    {"method": "GET", "path": "/api/chat/preferences", "note": "User preferences (user_id)"},
+                    {"method": "POST", "path": "/api/chat/preferences", "note": "Create preference"},
+                    {"method": "DELETE", "path": "/api/chat/preferences/{preference_id}", "note": "Delete preference"},
+                    {"method": "PUT", "path": "/api/chat/preferences/{preference_id}/deactivate", "note": "Soft-delete"},
+                    {"method": "PUT", "path": "/api/chat/preferences/{preference_id}/activate", "note": "Reactivate"},
+                    {"method": "DELETE", "path": "/api/chat/preferences", "note": "Clear all for user"},
+                ],
+            },
+        },
     }
 
 @app.on_event("startup")

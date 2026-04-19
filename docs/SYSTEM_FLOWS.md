@@ -41,6 +41,24 @@ This document provides a detailed explanation of all the components, flows, and 
 - **Optional FastAPI authentication:** When `SCC_API_KEYS` or `API_KEYS` is set, clients must send a key on every `/api` request (`x-api-key` or `Authorization: Bearer`). The React app uses `VITE_API_KEY` for the same value. CORS is tightened for production by setting `API_CORS_ORIGINS` to allowed browser origins.
 - **Crawl URL validation:** User-supplied crawl and fetch URLs are checked in `security_utils.validate_fetch_url` to limit SSRF-style abuse (private IPs, non-http(s) schemes, credentials in URLs, etc.). Trusted internal crawls can use `ALLOW_PRIVATE_CRAWL_URLS` or host allowlists via `CRAWL_ALLOWED_HOSTS` (see `.env.example`).
 
+### Search, embeddings, and keyword retrieval (not BM25)
+
+The stack does **not** use **BM25** or a dedicated Elasticsearch-style ranker.
+
+1. **Semantic / similarity search (default)**  
+   - Query text is embedded with the same OpenAI embedding model used at crawl time.  
+   - **PostgreSQL `pgvector`**: stored page/chunk embeddings use the `vector` type; retrieval uses cosine distance (`<=>`). Similarity is reported as `1 - distance` in `[0, 1]`.  
+   - **`hybrid_search` in `db_client.py`**: prefers vector hits above a (slightly relaxed) threshold; if needed, it supplements with text search (below).
+
+2. **Keyword / text-only search** (`text_only=true` on `/api/search`, or CLI/text path)  
+   - **`search_by_text`**: title `ILIKE` first, then **PostgreSQL full-text search** — `to_tsvector('english', …)`, `plainto_tsquery`, and **`ts_rank_cd`** for ordering. That is the built-in FTS ranking (cover density), **not** BM25.  
+   - Fallback: broader `ILIKE` on content if FTS returns nothing.
+
+3. **Embeddings in chat (RAG)**  
+   - Context for answers comes from the same embedding + vector similarity path (unless the message is treated as a greeting and retrieval is skipped).
+
+Optional future improvements: true hybrid fusion scores, `pg_trgm` for fuzzy match, or an external BM25/lexical service — none of those are required for the current design to work.
+
 ## Frontend Architecture and Components
 
 The frontend is built using React with TypeScript, providing a modern, responsive user interface for interacting with the Crawl4AI system. This section details the architecture, components, and data flows within the frontend.

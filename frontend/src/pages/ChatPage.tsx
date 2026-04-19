@@ -4,7 +4,6 @@ import { ChatMessage, Profile } from '@/api/apiService';
 import { api } from '@/api/apiWrapper';
 import { v4 as uuidv4 } from 'uuid';
 import { useUser } from '@/context/UserContext';
-import remarkGfm from 'remark-gfm';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -16,8 +15,10 @@ import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { MessageSquare, Plus, Trash2, Edit, RefreshCw, Bot, Send, Copy, Check } from 'lucide-react';
 import { createNotification } from '@/utils/notifications';
-import ReactMarkdown from 'react-markdown';
 import { PageHeader } from '@/components/PageHeader';
+import { MarkdownContent } from '@/components/MarkdownContent';
+import { apiService } from '@/api/apiService';
+import { Link } from 'react-router-dom';
 
 // Define the session interface
 interface ChatSession {
@@ -52,6 +53,7 @@ const ChatPage = () => {
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const { extractPreferencesFromText, addPreference } = useUser();
+  const [preferenceCount, setPreferenceCount] = useState<number | null>(null);
 
   // Initialize sessions and session ID when component mounts
   useEffect(() => {
@@ -193,6 +195,25 @@ const ChatPage = () => {
     }
   };
 
+  useEffect(() => {
+    if (!userProfile?.name?.trim()) {
+      setPreferenceCount(null);
+      return;
+    }
+    let cancelled = false;
+    apiService
+      .getUserPreferences(userProfile.name.trim(), 0.7, true)
+      .then((prefs) => {
+        if (!cancelled) setPreferenceCount(prefs.length);
+      })
+      .catch(() => {
+        if (!cancelled) setPreferenceCount(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [userProfile?.name]);
+
   // Load profiles and chat history only once when sessionId is available
   useEffect(() => {
     // Only run this effect if sessionId is available and not empty
@@ -296,7 +317,14 @@ const ChatPage = () => {
       };
       
       setChatHistory(prev => [...prev, assistantMessage]);
-      
+
+      if (userProfile?.name?.trim()) {
+        apiService
+          .getUserPreferences(userProfile.name.trim(), 0.7, true)
+          .then((prefs) => setPreferenceCount(prefs.length))
+          .catch(() => {});
+      }
+
       // If there's context in the response and it's not a greeting, add it as a system message
       if (!is_greeting && response.context && Array.isArray(response.context) && response.context.length > 0) {
         // The context is already formatted in the apiWrapper
@@ -502,11 +530,9 @@ const ChatPage = () => {
             ? 'bg-primary text-primary-foreground' 
             : 'bg-muted'
         }`}>
-          <div className="prose dark:prose-invert prose-sm">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-              {message.content}
-            </ReactMarkdown>
-          </div>
+          <MarkdownContent className="prose dark:prose-invert prose-sm max-w-none">
+            {message.content}
+          </MarkdownContent>
           <div className="text-xs mt-1 opacity-70">
             {formatTimestamp(message.created_at)}
           </div>
@@ -842,6 +868,15 @@ const ChatPage = () => {
                 </SelectContent>
               </Select>
             </div>
+
+            {userProfile?.name && preferenceCount !== null && preferenceCount > 0 && (
+              <Link
+                to={`/preferences/${encodeURIComponent(userProfile.name)}`}
+                className="text-xs text-muted-foreground hover:text-foreground whitespace-nowrap self-center px-2 py-1 rounded-md border border-white/[0.08] bg-[#171923]"
+              >
+                {preferenceCount} saved preference{preferenceCount === 1 ? '' : 's'}
+              </Link>
+            )}
             
             <Button
               variant="outline"

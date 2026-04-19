@@ -4,7 +4,7 @@ import toast from 'react-hot-toast';
 import { apiService, Site, Page } from '@/api/apiService';
 import { api } from '@/api/apiWrapper';
 import axios from 'axios';
-import ReactMarkdown from 'react-markdown';
+import { MarkdownContent } from '@/components/MarkdownContent';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import PageListItem from '@/components/PageListItem';
@@ -817,9 +817,7 @@ const SiteDetailPage = () => {
                             {detectContentType(databaseContent) === 'html' ? (
                               <div dangerouslySetInnerHTML={{ __html: sanitizeHtml(databaseContent) }} />
                             ) : (
-                              <ReactMarkdown>
-                                {databaseContent}
-                              </ReactMarkdown>
+                              <MarkdownContent>{databaseContent}</MarkdownContent>
                             )}
                           </div>
                         )
@@ -845,9 +843,7 @@ const SiteDetailPage = () => {
                             {detectContentType(liveContent) === 'html' ? (
                               <div dangerouslySetInnerHTML={{ __html: sanitizeHtml(liveContent) }} />
                             ) : (
-                              <ReactMarkdown>
-                                {liveContent}
-                              </ReactMarkdown>
+                              <MarkdownContent>{liveContent}</MarkdownContent>
                             )}
                           </div>
                         )

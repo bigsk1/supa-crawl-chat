@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { apiService, SearchResult } from '@/api/apiService';
-import ReactMarkdown from 'react-markdown';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { PageHeader } from '@/components/PageHeader';
+import { MarkdownContent } from '@/components/MarkdownContent';
+import { useVirtualizer } from '@tanstack/react-virtual';
 
 const SearchPage = () => {
   const [query, setQuery] = useState('');
@@ -16,6 +17,8 @@ const SearchPage = () => {
   const [showDuplicates, setShowDuplicates] = useState(false);
   const [selectedResult, setSelectedResult] = useState<SearchResult | null>(null);
   const [contentViewMode, setContentViewMode] = useState<'raw' | 'rendered'>('rendered');
+  const [textOnly, setTextOnly] = useState(false);
+  const listParentRef = useRef<HTMLDivElement>(null);
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -30,7 +33,13 @@ const SearchPage = () => {
     setSelectedResult(null);
 
     try {
-      const searchResults = await apiService.search(query, undefined, threshold, limit);
+      const searchResults = await apiService.search(
+        query,
+        undefined,
+        threshold,
+        limit,
+        textOnly
+      );
       console.log('Search results:', searchResults); // Debug log
 
       // Process results to handle duplicates
@@ -95,6 +104,13 @@ const SearchPage = () => {
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#039;');
+
+  const rowVirtualizer = useVirtualizer({
+    count: results.length,
+    getScrollElement: () => listParentRef.current,
+    estimateSize: () => 200,
+    overscan: 6,
+  });
 
   const highlightQuery = (text: string) => {
     const escapedText = escapeHtml(text || '');
@@ -275,13 +291,13 @@ const SearchPage = () => {
                       {selectedResult.content || selectedResult.snippet || ''}
                     </pre>
                   ) : (
-                    <div className="prose dark:prose-invert max-w-none">
+                    <div className="max-w-none">
                       {detectContentType(selectedResult.content || selectedResult.snippet) === 'html' ? (
-                        <div dangerouslySetInnerHTML={{ __html: sanitizeHtml(selectedResult.content || selectedResult.snippet || '') }} />
+                        <div className="prose dark:prose-invert max-w-none" dangerouslySetInnerHTML={{ __html: sanitizeHtml(selectedResult.content || selectedResult.snippet || '') }} />
                       ) : (
-                        <ReactMarkdown>
+                        <MarkdownContent>
                           {selectedResult.content || selectedResult.snippet || ''}
-                        </ReactMarkdown>
+                        </MarkdownContent>
                       )}
                     </div>
                   )}
@@ -425,6 +441,20 @@ const SearchPage = () => {
                     <span className="ml-2 text-sm">Show duplicates</span>
                   </label>
                 </div>
+
+                <div className="flex items-center gap-2">
+                  <label className="flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={textOnly}
+                      onChange={() => setTextOnly(!textOnly)}
+                      className="rounded border-gray-500"
+                      disabled={isLoading}
+                    />
+                    <span className="text-sm">Keyword / Postgres FTS only</span>
+                  </label>
+                  <span className="text-xs text-muted-foreground hidden sm:inline">(skip embeddings)</span>
+                </div>
               </div>
             </div>
           </form>
@@ -436,76 +466,106 @@ const SearchPage = () => {
             </div>
           ) : hasSearched ? (
             results.length > 0 ? (
-              <div className="space-y-6">
-                <p className="text-sm text-gray-600 dark:text-gray-400">
+              <div>
+                <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
                   Found {results.length} results
+                  {textOnly ? (
+                    <span className="ml-2 text-xs text-amber-700 dark:text-amber-300">(keyword / FTS — no vectors)</span>
+                  ) : null}
                 </p>
-                {results.map((result) => (
-                  <div key={result.id} className="card p-6 hover:shadow-md transition-shadow duration-200">
-                    <div className="flex justify-between items-start mb-2">
-                      <h2 className="text-lg font-semibold">
-                        <span
-                          dangerouslySetInnerHTML={{
-                            __html: sanitizeHtml(highlightQuery(result.title || 'Untitled')),
-                          }}
-                        />
-                      </h2>
-                      <span className="text-sm bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 px-2 py-1 rounded">
-                        {Math.round(result.similarity * 100)}% match
-                      </span>
-                    </div>
-
-                    <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">
-                      {result.site_name && (
-                        <Link
-                          to={`/sites/${result.site_id}`}
-                          className="hover:underline text-blue-600 dark:text-blue-400"
+                <div ref={listParentRef} className="max-h-[72vh] overflow-auto rounded-lg pr-1">
+                  <div
+                    className="relative w-full"
+                    style={{ height: rowVirtualizer.getTotalSize() }}
+                  >
+                    {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                      const result = results[virtualRow.index];
+                      return (
+                        <div
+                          key={result.id}
+                          data-index={virtualRow.index}
+                          ref={rowVirtualizer.measureElement}
+                          className="absolute left-0 top-0 w-full box-border pb-4"
+                          style={{ transform: `translateY(${virtualRow.start}px)` }}
                         >
-                          {result.site_name}
-                        </Link>
-                      )}
-                      {' • '}
-                      <a
-                        href={getCleanUrl(result.url)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="hover:underline"
-                      >
-                        {new URL(result.url).hostname}
-                      </a>
-                    </p>
+                          <div className="card p-6 hover:shadow-md transition-shadow duration-200">
+                            <div className="flex justify-between items-start mb-2">
+                              <h2 className="text-lg font-semibold">
+                                <span
+                                  dangerouslySetInnerHTML={{
+                                    __html: sanitizeHtml(highlightQuery(result.title || 'Untitled')),
+                                  }}
+                                />
+                              </h2>
+                              <span className="text-sm bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 px-2 py-1 rounded">
+                                {Math.round(result.similarity * 100)}% match
+                              </span>
+                            </div>
 
-                    <div className="text-sm mb-4">
-                      <span
-                        dangerouslySetInnerHTML={{
-                          __html: sanitizeHtml(highlightQuery((result.snippet || result.content || '').substring(0, 300) + '...')),
-                        }}
-                      />
-                    </div>
+                            <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">
+                              {result.site_name && (
+                                <Link
+                                  to={`/sites/${result.site_id}`}
+                                  className="hover:underline text-blue-600 dark:text-blue-400"
+                                >
+                                  {result.site_name}
+                                </Link>
+                              )}
+                              {' • '}
+                              <a
+                                href={getCleanUrl(result.url)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="hover:underline"
+                              >
+                                {(() => {
+                                  try {
+                                    return new URL(result.url).hostname;
+                                  } catch {
+                                    return result.url;
+                                  }
+                                })()}
+                              </a>
+                            </p>
 
-                    {result.context && (
-                      <div className="text-xs bg-gray-100 dark:bg-gray-800 p-2 rounded mb-2">
-                        {result.context}
-                      </div>
-                    )}
+                            <div className="text-sm mb-4">
+                              <span
+                                dangerouslySetInnerHTML={{
+                                  __html: sanitizeHtml(
+                                    highlightQuery((result.snippet || result.content || '').substring(0, 300) + '...')
+                                  ),
+                                }}
+                              />
+                            </div>
 
-                    <div className="flex justify-between items-center">
-                      <button
-                        onClick={() => handleViewResult(result)}
-                        className="text-blue-600 dark:text-blue-400 hover:underline"
-                      >
-                        View Full Content
-                      </button>
+                            {result.context && (
+                              <div className="text-xs bg-gray-100 dark:bg-gray-800 p-2 rounded mb-2">
+                                {result.context}
+                              </div>
+                            )}
 
-                      {result.is_chunk && (
-                        <span className="text-xs bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 px-2 py-1 rounded">
-                          Chunk {result.chunk_index}
-                          {result.parent_title && ` of ${result.parent_title}`}
-                        </span>
-                      )}
-                    </div>
+                            <div className="flex justify-between items-center">
+                              <button
+                                type="button"
+                                onClick={() => handleViewResult(result)}
+                                className="text-blue-600 dark:text-blue-400 hover:underline"
+                              >
+                                View Full Content
+                              </button>
+
+                              {result.is_chunk && (
+                                <span className="text-xs bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 px-2 py-1 rounded">
+                                  Chunk {result.chunk_index}
+                                  {result.parent_title && ` of ${result.parent_title}`}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
-                ))}
+                </div>
               </div>
             ) : (
               <div className="text-center py-12">
@@ -523,12 +583,12 @@ const SearchPage = () => {
                 keyword search, semantic search understands the meaning behind your query.
               </p>
               <ul className="list-disc list-inside space-y-2 text-sm">
-                <li>Enter natural language queries like "What is machine learning?"</li>
-                <li>Results are ranked by semantic similarity to your query</li>
-                <li>Adjust the threshold to control result quality (lower = more results)</li>
-                <li>Toggle "Show duplicates" to see all matching chunks</li>
+                <li>Default mode uses <strong>embeddings + pgvector</strong> similarity (not BM25)</li>
+                <li>Enable <strong>Keyword / Postgres FTS only</strong> to skip vectors and use full-text search</li>
+                <li>Adjust the threshold for vector mode (lower = more results)</li>
+                <li>Long result lists are virtualized for smoother scrolling</li>
+                <li>Toggle &quot;Show duplicates&quot; to see all matching chunks</li>
                 <li>Click on site names to view all pages from that site</li>
-                <li>Click "View Full Content" to see the complete result</li>
               </ul>
 
               <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg mt-6">
