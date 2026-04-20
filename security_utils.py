@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import posixpath
 import socket
-from typing import Iterable, Optional, Set
-from urllib.parse import urlparse
+from typing import Iterable, List, Optional, Set
+from urllib.parse import urljoin, urlparse
+
+import requests
 
 
 class UnsafeURL(ValueError):
@@ -118,3 +121,105 @@ def _looks_like_ip(hostname: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+def same_hostname(url: str, other_url: str) -> bool:
+    """Return True when two URLs share the same normalized hostname."""
+    left = (urlparse(url).hostname or "").lower().rstrip(".")
+    right = (urlparse(other_url).hostname or "").lower().rstrip(".")
+    return bool(left and right and left == right)
+
+
+def safe_join_url(base_url: str, candidate: str, *, purpose: str = "fetch") -> str:
+    """Resolve a possibly-relative URL against *base_url* and validate the result."""
+    joined = urljoin(base_url, (candidate or "").strip())
+    return validate_fetch_url(joined, purpose=purpose)
+
+
+def fetch_validated_url(
+    url: str,
+    *,
+    purpose: str = "fetch",
+    timeout: int = 30,
+    max_redirects: int = 5,
+    headers: Optional[dict] = None,
+) -> requests.Response:
+    """Fetch a URL while validating every redirect hop.
+
+    ``requests`` follows redirects automatically by default, which can turn a
+    public URL into a private-network fetch after the initial validation. This
+    helper disables automatic redirects, validates each Location target, and
+    only then continues.
+    """
+
+    current_url = validate_fetch_url(url, purpose=purpose)
+    session = requests.Session()
+
+    for _ in range(max_redirects + 1):
+        response = session.get(
+            current_url,
+            timeout=timeout,
+            headers=headers,
+            allow_redirects=False,
+        )
+        if not response.is_redirect:
+            response.url = current_url
+            return response
+
+        location = response.headers.get("Location")
+        if not location:
+            raise UnsafeURL(f"{purpose} redirect did not include a Location header")
+
+        current_url = safe_join_url(current_url, location, purpose=f"{purpose} redirect")
+
+    raise UnsafeURL(f"{purpose} exceeded redirect limit ({max_redirects})")
+
+
+def filter_safe_crawl_urls(
+    urls: Iterable[str],
+    *,
+    source_url: Optional[str] = None,
+    purpose: str = "crawl",
+    allow_external_hosts: bool = False,
+) -> List[str]:
+    """Validate and deduplicate URLs before they are passed to the crawler.
+
+    If ``source_url`` is provided, relative URLs are resolved against it. When
+    ``allow_external_hosts`` is false, URLs whose host differs from the source
+    host are skipped. Skipped URLs are intentionally silent at this layer so
+    callers can decide how noisy logs should be.
+    """
+
+    safe: List[str] = []
+    seen: Set[str] = set()
+    for raw in urls:
+        if not raw:
+            continue
+        try:
+            candidate = (
+                safe_join_url(source_url, raw, purpose=purpose)
+                if source_url
+                else validate_fetch_url(str(raw), purpose=purpose)
+            )
+        except UnsafeURL:
+            continue
+
+        parsed = urlparse(candidate)
+        clean_path = posixpath.normpath(parsed.path or "/")
+        if parsed.path.endswith("/") and not clean_path.endswith("/"):
+            clean_path += "/"
+        normalized = parsed._replace(
+            scheme=parsed.scheme.lower(),
+            netloc=parsed.netloc.lower(),
+            path=clean_path,
+            fragment="",
+        ).geturl()
+
+        if source_url and not allow_external_hosts and not same_hostname(source_url, normalized):
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        safe.append(normalized)
+
+    return safe

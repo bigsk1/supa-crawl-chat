@@ -43,7 +43,8 @@ This document provides a detailed explanation of all the components, flows, and 
   - **Legacy keys:** **`SCC_API_KEYS`** or **`API_KEYS`** — same headers; the React app can use **`VITE_API_KEY`** for `x-api-key`.  
   - **WebUI JWT:** If **`WEBUI_PASSWORD`** is set, the browser logs in via **`POST /api/auth/webui/login`** and sends a **`Authorization: Bearer`** token (JWT) on subsequent API calls.  
   - **`/api/health`** and **`/api/auth/webui/*`** stay public (no key). Full detail: [API.md](./API.md).  
-- **Crawl URL validation:** User-supplied crawl and fetch URLs are checked in `security_utils.validate_fetch_url` to limit SSRF-style abuse (private IPs, non-http(s) schemes, credentials in URLs, etc.). Trusted internal crawls can use `ALLOW_PRIVATE_CRAWL_URLS` or host allowlists via `CRAWL_ALLOWED_HOSTS` (see `.env.example`). CORS: set **`API_CORS_ORIGINS`** for production browser origins.
+- **Crawl URL validation:** User-supplied crawl and fetch URLs are checked in `security_utils.validate_fetch_url` to limit SSRF-style abuse (private IPs, non-http(s) schemes, credentials in URLs, etc.). Sitemap fetches validate every redirect hop, and every URL extracted from a sitemap/llms.txt-style file is revalidated before Crawl4AI receives it. Sitemap expansion is same-host by default; external sitemap URLs, external-link following, redirects, custom proxies, and file downloads are opt-in with the `CRAWL_*` safety flags documented in `.env.example`. Trusted internal crawls can use `ALLOW_PRIVATE_CRAWL_URLS` or host allowlists via `CRAWL_ALLOWED_HOSTS`. CORS: set **`API_CORS_ORIGINS`** for production browser origins.
+- **Crawled content hygiene:** Before title/summary generation, chunking, embeddings, and storage, crawled text passes through `content_hygiene.clean_crawled_content`. This removes high-risk retrieval noise such as huge base64 data URIs, encoded fenced blocks, long encoded tokens, control characters, and over-large page bodies (`CRAWL_MAX_CONTENT_CHARS`). Metadata records cleanup flags under `content_hygiene` so noisy pages can be audited later.
 
 ### Search, embeddings, and keyword retrieval (not BM25)
 
@@ -1234,4 +1235,3 @@ When using Docker, environment variables are resolved in the following order (hi
 3. Variables defined in the container's environment
 
 This precedence order is important to understand when troubleshooting configuration issues. For example, even if `SUPABASE_URL` is commented out in your `.env` file, it might still be set in the Docker Compose file's `environment` section.
-

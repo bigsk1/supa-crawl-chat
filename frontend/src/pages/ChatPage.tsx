@@ -33,6 +33,69 @@ interface Message extends ChatMessage {
   context?: string;
 }
 
+const CHAT_SESSIONS_KEY = 'chat_sessions';
+const CURRENT_SESSION_ID_KEY = 'current_session_id';
+const CHAT_INITIALIZED_KEY = 'chat_initialized';
+const CHAT_HISTORY_CACHE_PREFIX = 'chat_history_cache:';
+
+const chatInitializedKey = (sessionId: string) => `${CHAT_INITIALIZED_KEY}:${sessionId}`;
+const chatHistoryCacheKey = (sessionId: string) => `${CHAT_HISTORY_CACHE_PREFIX}${sessionId}`;
+
+const safeParseJson = <T,>(raw: string | null, fallback: T): T => {
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+};
+
+const loadCachedChatHistory = (sessionId: string): Message[] => {
+  const cached = safeParseJson<{ messages?: Message[] } | Message[]>(
+    localStorage.getItem(chatHistoryCacheKey(sessionId)),
+    []
+  );
+
+  if (Array.isArray(cached)) {
+    return cached;
+  }
+
+  return Array.isArray(cached.messages) ? cached.messages : [];
+};
+
+const saveCachedChatHistory = (sessionId: string, messages: Message[]) => {
+  if (!messages.length) {
+    localStorage.removeItem(chatHistoryCacheKey(sessionId));
+    return;
+  }
+
+  localStorage.setItem(
+    chatHistoryCacheKey(sessionId),
+    JSON.stringify({
+      version: 1,
+      savedAt: new Date().toISOString(),
+      messages,
+    })
+  );
+};
+
+const removeCachedChatHistory = (sessionId: string) => {
+  localStorage.removeItem(chatHistoryCacheKey(sessionId));
+};
+
+const getStoredChatInitialized = (sessionId: string): boolean => {
+  return (
+    localStorage.getItem(chatInitializedKey(sessionId)) === 'true' ||
+    localStorage.getItem(CHAT_INITIALIZED_KEY) === 'true'
+  );
+};
+
+const setStoredChatInitialized = (sessionId: string, initialized: boolean) => {
+  const value = initialized ? 'true' : 'false';
+  localStorage.setItem(chatInitializedKey(sessionId), value);
+  localStorage.setItem(CHAT_INITIALIZED_KEY, value);
+};
+
 const ChatPage = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [message, setMessage] = useState('');
@@ -58,19 +121,25 @@ const ChatPage = () => {
   // Initialize sessions and session ID when component mounts
   useEffect(() => {
     // Load saved sessions from localStorage
-    const storedSessions = localStorage.getItem('chat_sessions');
-    const parsedSessions = storedSessions ? JSON.parse(storedSessions) : [];
+    const parsedSessions = safeParseJson<ChatSession[]>(
+      localStorage.getItem(CHAT_SESSIONS_KEY),
+      []
+    );
     setSessions(parsedSessions);
-    
+
     // Get current session ID from localStorage or create a new one
-    const storedSessionId = localStorage.getItem('current_session_id');
-    const storedChatInitialized = localStorage.getItem('chat_initialized') === 'true';
-    
+    const storedSessionId = localStorage.getItem(CURRENT_SESSION_ID_KEY);
+
     if (storedSessionId && parsedSessions.some((s: ChatSession) => s.id === storedSessionId)) {
       // Use existing session
+      const cachedHistory = loadCachedChatHistory(storedSessionId);
+      if (cachedHistory.length) {
+        setChatHistory(cachedHistory);
+      }
+
       setSessionId(storedSessionId);
-      setChatInitialized(storedChatInitialized);
-      
+      setChatInitialized(getStoredChatInitialized(storedSessionId) || cachedHistory.length > 0);
+
       // Update last activity
       updateSessionActivity(storedSessionId);
     } else {
@@ -82,9 +151,15 @@ const ChatPage = () => {
   // Save sessions to localStorage whenever they change
   useEffect(() => {
     if (sessions.length > 0) {
-      localStorage.setItem('chat_sessions', JSON.stringify(sessions));
+      localStorage.setItem(CHAT_SESSIONS_KEY, JSON.stringify(sessions));
     }
   }, [sessions]);
+
+  // Persist the current visible chat so it survives route changes immediately.
+  useEffect(() => {
+    if (!sessionId) return;
+    saveCachedChatHistory(sessionId, chatHistory);
+  }, [sessionId, chatHistory]);
 
   // Create a new session
   const createNewSession = (name: string) => {
@@ -99,8 +174,9 @@ const ChatPage = () => {
     setSessionId(newSession.id);
     setChatInitialized(false);
     setChatHistory([]);
-    localStorage.setItem('current_session_id', newSession.id);
-    localStorage.setItem('chat_initialized', 'false');
+    localStorage.setItem(CURRENT_SESSION_ID_KEY, newSession.id);
+    setStoredChatInitialized(newSession.id, false);
+    removeCachedChatHistory(newSession.id);
     
     return newSession.id;
   };
@@ -119,28 +195,37 @@ const ChatPage = () => {
   // Switch to a different session
   const switchSession = (id: string) => {
     if (id === sessionId) return; // Already on this session
-    
+
+    const cachedHistory = loadCachedChatHistory(id);
     setSessionId(id);
-    setChatHistory([]);
+    setChatHistory(cachedHistory);
+    setChatInitialized(getStoredChatInitialized(id) || cachedHistory.length > 0);
     setIsLoading(true);
-    
+
     // Check if this session has been initialized
     const session = sessions.find(s => s.id === id);
     if (session) {
       updateSessionActivity(id);
-      localStorage.setItem('current_session_id', id);
-      
+      localStorage.setItem(CURRENT_SESSION_ID_KEY, id);
+
       // Load chat history for this session
       api.getChatHistory(id)
         .then(history => {
-          setChatHistory(history);
-          setChatInitialized(history.length > 0);
-          localStorage.setItem('chat_initialized', history.length > 0 ? 'true' : 'false');
+          if (history.length > 0) {
+            setChatHistory(history);
+            setChatInitialized(true);
+            setStoredChatInitialized(id, true);
+          } else if (!cachedHistory.length) {
+            setChatInitialized(false);
+            setStoredChatInitialized(id, false);
+          }
         })
         .catch(error => {
           console.error('Error loading session history:', error);
-          setChatInitialized(false);
-          localStorage.setItem('chat_initialized', 'false');
+          if (!cachedHistory.length) {
+            setChatInitialized(false);
+            setStoredChatInitialized(id, false);
+          }
         })
         .finally(() => {
           setIsLoading(false);
@@ -243,7 +328,13 @@ const ChatPage = () => {
           setIsLoadingHistory(true);
           try {
             const history = await api.getChatHistory(sessionId);
-            setChatHistory(history);
+            if (history.length > 0) {
+              setChatHistory(history);
+              setStoredChatInitialized(sessionId, true);
+            } else if (!loadCachedChatHistory(sessionId).length) {
+              setChatInitialized(false);
+              setStoredChatInitialized(sessionId, false);
+            }
             // Update session activity
             updateSessionActivity(sessionId);
           } catch (error) {
@@ -288,6 +379,11 @@ const ChatPage = () => {
     
     setChatHistory(prev => [...prev, userMessage]);
     setMessage('');
+    if (sessionId) {
+      setChatInitialized(true);
+      setStoredChatInitialized(sessionId, true);
+      updateSessionActivity(sessionId);
+    }
     
     try {
       // Send message to API
@@ -308,6 +404,11 @@ const ChatPage = () => {
       };
       
       setChatHistory(prev => [...prev, assistantMessage]);
+      if (sessionId) {
+        setChatInitialized(true);
+        setStoredChatInitialized(sessionId, true);
+        updateSessionActivity(sessionId);
+      }
 
       // Show Brave web retrieval in UI (API returns brave_preview; LLM also received this as inject)
       const rw = response as {
@@ -405,6 +506,9 @@ const ChatPage = () => {
       setIsLoading(true);
       await api.clearChatHistory(sessionId);
       setChatHistory([]);
+      setChatInitialized(false);
+      setStoredChatInitialized(sessionId, false);
+      removeCachedChatHistory(sessionId);
       createNotification('Success', 'Chat history cleared', 'success', true);
     } catch (error) {
       console.error('Error clearing chat history:', error);
@@ -419,7 +523,10 @@ const ChatPage = () => {
     if (window.confirm('Start a new chat? This will keep your current session but clear the current conversation.')) {
       setChatHistory([]);
       setChatInitialized(false);
-      localStorage.setItem('chat_initialized', 'false');
+      if (sessionId) {
+        setStoredChatInitialized(sessionId, false);
+        removeCachedChatHistory(sessionId);
+      }
       
       // Update session activity
       if (sessionId) {
@@ -623,7 +730,15 @@ const ChatPage = () => {
       setIsLoadingHistory(true);
       try {
         const history = await api.getChatHistory(sessionId);
-        setChatHistory(history);
+        if (history.length > 0) {
+          setChatHistory(history);
+          setChatInitialized(true);
+          setStoredChatInitialized(sessionId, true);
+        } else if (!loadCachedChatHistory(sessionId).length) {
+          setChatHistory([]);
+          setChatInitialized(false);
+          setStoredChatInitialized(sessionId, false);
+        }
       } catch (error) {
         console.error('Error loading chat history:', error);
       } finally {
@@ -1024,4 +1139,4 @@ const ChatPage = () => {
   );
 };
 
-export default ChatPage; 
+export default ChatPage;

@@ -4,16 +4,22 @@ import json
 import re
 import asyncio
 import xml.etree.ElementTree as ET
-import requests
 from typing import List, Dict, Any, Optional, Union
 from urllib.parse import urlparse
 from tqdm import tqdm
 
 from crawl_client import Crawl4AIClient
+from content_hygiene import clean_crawled_content
 from embeddings import EmbeddingGenerator
 from db_client import SupabaseClient
 from content_enhancer import ContentEnhancer
-from security_utils import UnsafeURL, validate_fetch_url
+from security_utils import (
+    UnsafeURL,
+    env_bool,
+    fetch_validated_url,
+    filter_safe_crawl_urls,
+    validate_fetch_url,
+)
 from search_quality import rerank_search_results_by_query_terms
 from utils import console, print_header, print_success, print_error, print_warning, print_info, get_rich_progress
 
@@ -120,15 +126,55 @@ class WebCrawler:
             crawl_options["download_files"] = advanced_options["download_files"]
         if "follow_redirects" in advanced_options:
             crawl_options["follow_redirects"] = advanced_options["follow_redirects"]
+        else:
+            crawl_options["follow_redirects"] = env_bool("CRAWL_FOLLOW_REDIRECTS", default=False)
         if "max_depth" in advanced_options:
             crawl_options["max_depth"] = advanced_options["max_depth"]
         if "follow_external_links" in advanced_options:
             crawl_options["follow_external_links"] = advanced_options["follow_external_links"]
+        else:
+            crawl_options["follow_external_links"] = env_bool("CRAWL_FOLLOW_EXTERNAL_LINKS", default=False)
         if "include_patterns" in advanced_options:
             crawl_options["include_patterns"] = advanced_options["include_patterns"]
         if "exclude_patterns" in advanced_options:
             crawl_options["exclude_patterns"] = advanced_options["exclude_patterns"]
         return extraction_config, crawl_options
+
+    def _page_from_crawl_content(self, url: str, title: str, content: str) -> Optional[Dict[str, Any]]:
+        cleaned = clean_crawled_content(content or "")
+        clean_content = cleaned["content"]
+        if not clean_content:
+            print_warning(f"No indexable content remained after cleanup for URL: {url}")
+            return None
+
+        hygiene = cleaned["metadata"]
+        flags = hygiene.get("quality_flags") or []
+        if flags:
+            print_warning(f"Content hygiene flags for {url}: {', '.join(flags)}")
+
+        return {
+            "url": url,
+            "title": title or self.extract_domain(url),
+            "content": clean_content,
+            "summary": "",
+            "is_chunk": False,
+            "metadata": {
+                "source": self.extract_domain(url),
+                "url_path": urlparse(url).path,
+                "crawled_at": time.strftime("%Y-%m-%dT%H:%M:%S.%f%z"),
+                "content_hygiene": hygiene,
+            },
+        }
+
+    def _chunk_metadata(self, page: Dict[str, Any], chunk_size: int, **extra: Any) -> Dict[str, Any]:
+        return {
+            **(page.get("metadata") or {}),
+            "source": self.extract_domain(page["url"]),
+            "url_path": urlparse(page["url"]).path,
+            "chunk_size": chunk_size,
+            "crawled_at": time.strftime("%Y-%m-%dT%H:%M:%S.%f%z"),
+            **extra,
+        }
 
     def process_crawl_results(self, results: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Process the results from the crawl4ai API.
@@ -208,19 +254,9 @@ class WebCrawler:
                 elif 'title' in result:
                     title = result.get('title', '')
 
-                # Create a page dictionary
-                page = {
-                    'url': url,
-                    'title': title or self.extract_domain(url),
-                    'content': content,
-                    'summary': '',  # Will be generated later
-                    'is_chunk': False,
-                    'metadata': {
-                        "source": self.extract_domain(url),
-                        "url_path": urlparse(url).path,
-                        "crawled_at": time.strftime("%Y-%m-%dT%H:%M:%S.%f%z")
-                    }
-                }
+                page = self._page_from_crawl_content(url, title, content)
+                if not page:
+                    continue
 
                 pages.append(page)
                 print_info(f"Added page from results: {url} with {len(content)} characters of content")
@@ -234,19 +270,13 @@ class WebCrawler:
                     print_warning(f"No content found for URL: {url}")
                     continue
 
-                # Create a page dictionary
-                page = {
-                    'url': url,  # Use the actual URL from the crawl results
-                    'title': page_data.get('title', '') or self.extract_domain(url),
-                    'content': page_data.get('content', ''),
-                    'summary': '',  # Will be generated later
-                    'is_chunk': False,
-                    'metadata': {
-                        "source": self.extract_domain(url),
-                        "url_path": urlparse(url).path,
-                        "crawled_at": time.strftime("%Y-%m-%dT%H:%M:%S.%f%z")
-                    }
-                }
+                page = self._page_from_crawl_content(
+                    url,
+                    page_data.get('title', ''),
+                    page_data.get('content', ''),
+                )
+                if not page:
+                    continue
 
                 pages.append(page)
                 print_info(f"Added page from pages: {url}")
@@ -288,19 +318,9 @@ class WebCrawler:
                 elif 'title' in result:
                     title = result.get('title', '')
 
-                # Create a page dictionary
-                page = {
-                    'url': url,
-                    'title': title or self.extract_domain(url),
-                    'content': content,
-                    'summary': '',  # Will be generated later
-                    'is_chunk': False,
-                    'metadata': {
-                        "source": self.extract_domain(url),
-                        "url_path": urlparse(url).path,
-                        "crawled_at": time.strftime("%Y-%m-%dT%H:%M:%S.%f%z")
-                    }
-                }
+                page = self._page_from_crawl_content(url, title, content)
+                if not page:
+                    return pages
 
                 pages.append(page)
                 print_info(f"Added page from raw result: {url}")
@@ -329,15 +349,12 @@ class WebCrawler:
         if total_tokens <= max_tokens:
             page['is_chunk'] = False
             page['chunk_index'] = None
-            page['metadata'] = {
-                **(page.get('metadata') or {}),
-                "source": self.extract_domain(page['url']),
-                "url_path": urlparse(page['url']).path,
-                "chunk_size": total_tokens,
-                "chunk_count": 0,
-                "has_chunks": False,
-                "crawled_at": time.strftime("%Y-%m-%dT%H:%M:%S.%f%z")
-            }
+            page['metadata'] = self._chunk_metadata(
+                page,
+                total_tokens,
+                chunk_count=0,
+                has_chunks=False,
+            )
             return [page]
 
         # Use the embedding generator's tokenizer to count tokens
@@ -389,12 +406,7 @@ class WebCrawler:
                         chunk_page['url'] = f"{page['url']}#chunk-{chunk_index}"
 
                         # Create proper metadata
-                        chunk_page['metadata'] = {
-                            "source": self.extract_domain(page['url']),
-                            "url_path": urlparse(page['url']).path,
-                            "chunk_size": current_tokens,
-                            "crawled_at": time.strftime("%Y-%m-%dT%H:%M:%S.%f%z")
-                        }
+                        chunk_page['metadata'] = self._chunk_metadata(page, current_tokens)
 
                         chunks.append(chunk_page)
                         chunk_index += 1
@@ -417,12 +429,7 @@ class WebCrawler:
                         chunk_page['url'] = f"{page['url']}#chunk-{chunk_index}"
 
                         # Create proper metadata
-                        chunk_page['metadata'] = {
-                            "source": self.extract_domain(page['url']),
-                            "url_path": urlparse(page['url']).path,
-                            "chunk_size": len(chunk_tokens),
-                            "crawled_at": time.strftime("%Y-%m-%dT%H:%M:%S.%f%z")
-                        }
+                        chunk_page['metadata'] = self._chunk_metadata(page, len(chunk_tokens))
 
                         chunks.append(chunk_page)
                         chunk_index += 1
@@ -442,12 +449,7 @@ class WebCrawler:
                         chunk_page['url'] = f"{page['url']}#chunk-{chunk_index}"
 
                         # Create proper metadata
-                        chunk_page['metadata'] = {
-                            "source": self.extract_domain(page['url']),
-                            "url_path": urlparse(page['url']).path,
-                            "chunk_size": current_tokens,
-                            "crawled_at": time.strftime("%Y-%m-%dT%H:%M:%S.%f%z")
-                        }
+                        chunk_page['metadata'] = self._chunk_metadata(page, current_tokens)
 
                         chunks.append(chunk_page)
                         chunk_index += 1
@@ -496,12 +498,7 @@ class WebCrawler:
                 chunk_page['url'] = f"{page['url']}#chunk-{chunk_index}"
 
                 # Create proper metadata
-                chunk_page['metadata'] = {
-                    "source": self.extract_domain(page['url']),
-                    "url_path": urlparse(page['url']).path,
-                    "chunk_size": current_tokens,
-                    "crawled_at": time.strftime("%Y-%m-%dT%H:%M:%S.%f%z")
-                }
+                chunk_page['metadata'] = self._chunk_metadata(page, current_tokens)
 
                 chunks.append(chunk_page)
 
@@ -511,14 +508,12 @@ class WebCrawler:
                 page['is_chunk'] = False
 
                 # Set proper metadata for the parent page
-                page['metadata'] = {
-                    "source": self.extract_domain(page['url']),
-                    "url_path": urlparse(page['url']).path,
-                    "chunk_size": total_tokens,
-                    "chunk_count": 0,
-                    "has_chunks": False,
-                    "crawled_at": time.strftime("%Y-%m-%dT%H:%M:%S.%f%z")
-                }
+                page['metadata'] = self._chunk_metadata(
+                    page,
+                    total_tokens,
+                    chunk_count=0,
+                    has_chunks=False,
+                )
 
                 return [page]
 
@@ -530,14 +525,12 @@ class WebCrawler:
                 parent_page['chunk_index'] = None
 
                 # Set proper metadata for the parent page
-                parent_page['metadata'] = {
-                    "source": self.extract_domain(page['url']),
-                    "url_path": urlparse(page['url']).path,
-                    "chunk_size": total_tokens,
-                    "chunk_count": len(chunks),
-                    "has_chunks": True,
-                    "crawled_at": time.strftime("%Y-%m-%dT%H:%M:%S.%f%z")
-                }
+                parent_page['metadata'] = self._chunk_metadata(
+                    page,
+                    total_tokens,
+                    chunk_count=len(chunks),
+                    has_chunks=True,
+                )
 
                 print_info(f"Split page '{page.get('title', 'Untitled')}' into {len(chunks)} chunks")
 
@@ -552,12 +545,10 @@ class WebCrawler:
             page['is_chunk'] = False
 
             # Set proper metadata for the parent page
-            page['metadata'] = {
-                "source": self.extract_domain(page['url']),
-                "url_path": urlparse(page['url']).path,
-                "chunk_size": self.embedding_generator.count_tokens(content) if content else 0,
-                "crawled_at": time.strftime("%Y-%m-%dT%H:%M:%S.%f%z")
-            }
+            page['metadata'] = self._chunk_metadata(
+                page,
+                self.embedding_generator.count_tokens(content) if content else 0,
+            )
 
             return [page]
 
@@ -904,7 +895,12 @@ class WebCrawler:
         try:
             # First, fetch the sitemap XML directly
             print_info(f"Fetching sitemap XML from: {sitemap_url}")
-            response = requests.get(sitemap_url, timeout=int(os.getenv("SITEMAP_FETCH_TIMEOUT", "30")))
+            response = fetch_validated_url(
+                sitemap_url,
+                purpose="sitemap crawl",
+                timeout=int(os.getenv("SITEMAP_FETCH_TIMEOUT", "30")),
+                max_redirects=int(os.getenv("CRAWL_MAX_REDIRECTS", "5")),
+            )
             response.raise_for_status()  # Raise an exception for HTTP errors
 
             raw = response.content
@@ -944,6 +940,28 @@ class WebCrawler:
                     return site_id
 
             print_info(f"Found {len(urls)} URLs in sitemap")
+
+            allow_external_sitemap_urls = bool(advanced_options.get("follow_external_links")) or env_bool(
+                "CRAWL_SITEMAP_ALLOW_EXTERNAL",
+                default=False,
+            )
+            safe_urls = filter_safe_crawl_urls(
+                urls,
+                source_url=sitemap_url,
+                purpose="sitemap URL",
+                allow_external_hosts=allow_external_sitemap_urls,
+            )
+            skipped_urls = len(urls) - len(safe_urls)
+            if skipped_urls > 0:
+                print_warning(
+                    f"Skipped {skipped_urls} sitemap URL(s) blocked by crawl safety policy. "
+                    "Set CRAWL_SITEMAP_ALLOW_EXTERNAL=true or CRAWL_ALLOWED_HOSTS for trusted exceptions."
+                )
+            urls = safe_urls
+
+            if not urls:
+                print_warning("No safe crawlable URLs remained after sitemap safety filtering.")
+                return site_id
 
             # Limit the number of URLs to crawl based on max_urls
             if max_urls > 0 and len(urls) > max_urls:
@@ -994,10 +1012,14 @@ class WebCrawler:
             # Link handling options
             if 'follow_redirects' in advanced_options:
                 crawl_options['follow_redirects'] = advanced_options['follow_redirects']
+            else:
+                crawl_options['follow_redirects'] = env_bool("CRAWL_FOLLOW_REDIRECTS", default=False)
             if 'max_depth' in advanced_options:
                 crawl_options['max_depth'] = advanced_options['max_depth']
             if 'follow_external_links' in advanced_options:
                 crawl_options['follow_external_links'] = advanced_options['follow_external_links']
+            else:
+                crawl_options['follow_external_links'] = env_bool("CRAWL_FOLLOW_EXTERNAL_LINKS", default=False)
             if 'include_patterns' in advanced_options:
                 crawl_options['include_patterns'] = advanced_options['include_patterns']
             if 'exclude_patterns' in advanced_options:

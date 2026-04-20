@@ -30,9 +30,11 @@ class ContentEnhancer:
             raise ValueError("OpenAI API key not provided and not found in environment variables.")
         
         try:
-            # Try to initialize the clients with the standard parameters
+            # Try to initialize the sync client with the standard parameters.
+            # Async clients are created per async call so their transports close
+            # before asyncio.run() tears down the crawl worker event loop.
             self.client = OpenAI(api_key=self.api_key)
-            self.async_client = AsyncOpenAI(api_key=self.api_key)
+            self._async_client_kwargs: Dict[str, Any] = {"api_key": self.api_key}
         except TypeError as e:
             # If there's an error about unexpected keyword arguments, try a different approach
             if "unexpected keyword argument" in str(e):
@@ -40,9 +42,8 @@ class ContentEnhancer:
                 # Initialize without the problematic parameter
                 import httpx
                 http_client = httpx.Client()
-                async_http_client = httpx.AsyncClient()
                 self.client = OpenAI(api_key=self.api_key, http_client=http_client)
-                self.async_client = AsyncOpenAI(api_key=self.api_key, http_client=async_http_client)
+                self._async_client_kwargs = {"api_key": self.api_key}
             else:
                 raise
         
@@ -143,14 +144,15 @@ class ContentEnhancer:
             else:
                 truncated_content = content
             
-            response = await self.async_client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"URL: {url}\n\nContent:\n{truncated_content}"}
-                ],
-                response_format={"type": "json_object"}
-            )
+            async with AsyncOpenAI(**self._async_client_kwargs) as async_client:
+                response = await async_client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"URL: {url}\n\nContent:\n{truncated_content}"}
+                    ],
+                    response_format={"type": "json_object"}
+                )
             
             result = json.loads(response.choices[0].message.content)
             return {
@@ -208,4 +210,4 @@ class ContentEnhancer:
             if i + batch_size < len(pages):
                 await asyncio.sleep(1)
         
-        return enhanced_pages 
+        return enhanced_pages

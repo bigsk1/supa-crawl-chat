@@ -87,6 +87,15 @@ When **`WEBUI_PASSWORD`** is set, the React app obtains a JWT and sends **`Autho
 | `AUDIT_LOG_ENABLED` | If true (default), write high-signal actions to a separate file under `APP_LOG_DIR` (default `audit.log`). |
 | `AUDIT_LOG_FILE` | Audit log filename (inside `APP_LOG_DIR`). |
 | `AUDIT_LOG_MAX_BYTES` / `AUDIT_LOG_BACKUP_COUNT` | Size-based rotation for the audit file. |
+| `ALLOW_PRIVATE_CRAWL_URLS` | If true, allow crawls to private/LAN/link-local targets. Keep false unless intentionally crawling internal hosts. |
+| `CRAWL_ALLOWED_HOSTS` | Comma-separated exact/wildcard host allowlist for trusted internal crawl targets. |
+| `CRAWL_ALLOW_REDIRECTS` | If true, API requests may ask Crawl4AI to follow redirects. Default policy blocks this. |
+| `CRAWL_ALLOW_EXTERNAL_LINKS` | If true, API requests may ask Crawl4AI to follow external hosts. Default policy blocks this. |
+| `CRAWL_ALLOW_CUSTOM_PROXY` | If true, API requests may provide a crawl proxy. Default policy blocks this. |
+| `CRAWL_ALLOW_FILE_DOWNLOADS` | If true, API requests may enable file downloads. Default policy blocks this. |
+| `CRAWL_SITEMAP_ALLOW_EXTERNAL` | If true, sitemap/llms.txt expansion may include public external hosts. Default is same-host only. |
+| `CRAWL_MAX_REDIRECTS` | Redirect hops allowed during app-side validated sitemap fetches. |
+| `CRAWL_MAX_CONTENT_CHARS` | Maximum characters stored/indexed per crawled page after encoded-noise cleanup. |
 
 Copy **`/.env.example`** for full project variables (crawl, chat, Brave, logging, etc.).
 

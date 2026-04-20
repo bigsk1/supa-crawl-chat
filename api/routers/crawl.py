@@ -10,7 +10,7 @@ from app_logging import attach_crawl_job_logger, detach_crawl_job_logger, get_au
 from api.supa_auth import get_client_ip
 from crawler import WebCrawler
 from db_client import SupabaseClient
-from security_utils import UnsafeURL, validate_fetch_url
+from security_utils import UnsafeURL, env_bool, validate_fetch_url
 
 
 logger = get_logger(__name__)
@@ -116,11 +116,44 @@ ADVANCED_OPTION_KEYS = [
 
 
 def _advanced_options(data: Any) -> Dict[str, Any]:
-    return {
+    options = {
         key: getattr(data, key)
         for key in ADVANCED_OPTION_KEYS
         if hasattr(data, key) and getattr(data, key) is not None
     }
+    if options.get("follow_external_links") and not env_bool("CRAWL_ALLOW_EXTERNAL_LINKS", default=False):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "follow_external_links is disabled by crawl safety policy. "
+                "Set CRAWL_ALLOW_EXTERNAL_LINKS=true only for trusted deployments."
+            ),
+        )
+    if options.get("follow_redirects") and not env_bool("CRAWL_ALLOW_REDIRECTS", default=False):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "follow_redirects is disabled by crawl safety policy. "
+                "Set CRAWL_ALLOW_REDIRECTS=true only for trusted deployments."
+            ),
+        )
+    if options.get("proxy") and not env_bool("CRAWL_ALLOW_CUSTOM_PROXY", default=False):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Custom crawl proxies are disabled by crawl safety policy. "
+                "Set CRAWL_ALLOW_CUSTOM_PROXY=true only for trusted deployments."
+            ),
+        )
+    if options.get("download_files") and not env_bool("CRAWL_ALLOW_FILE_DOWNLOADS", default=False):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "download_files is disabled by crawl safety policy. "
+                "Set CRAWL_ALLOW_FILE_DOWNLOADS=true only for trusted deployments."
+            ),
+        )
+    return options
 
 
 def _next_steps(site_id: int) -> Dict[str, str]:
