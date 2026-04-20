@@ -57,3 +57,19 @@ def is_simple_greeting_message(text: str) -> bool:
         r"\bsee\s+ya\b",
     )
     return any(re.search(p, clean) for p in patterns)
+
+
+def is_local_inventory_query(text: str) -> bool:
+    """True for questions about this app's own stored/crawled inventory."""
+    clean = re.sub(r"\s+", " ", (text or "").strip().lower())
+    if not clean:
+        return False
+    patterns = (
+        r"\bwhat\s+(sites|websites|domains)\s+(do\s+i\s+have|have\s+i)\s+crawl(?:ed)?\b",
+        r"\bwhat\s+(sites|websites|domains)\s+are\s+crawl(?:ed)?\b",
+        r"\blist\s+(my\s+)?crawl(?:ed)?\s+(sites|websites|domains)\b",
+        r"\bshow\s+(me\s+)?(my\s+)?crawl(?:ed)?\s+(sites|websites|domains)\b",
+        r"\bwhich\s+(sites|websites|domains)\s+(do\s+i\s+have|have\s+i)\s+crawl(?:ed)?\b",
+        r"\bhow\s+many\s+(sites|websites|domains)\s+(do\s+i\s+have|have\s+i)\s+crawl(?:ed)?\b",
+    )
+    return any(re.search(pattern, clean) for pattern in patterns)

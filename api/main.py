@@ -203,6 +203,7 @@ async def root():
                 "base": "/api/chat",
                 "routes": [
                     {"method": "POST", "path": "/api/chat", "note": "Chat + RAG + optional Brave; server uses .env (CHAT_MAX_COMPLETION_TOKENS, CHAT_MODEL, BRAVE_*). Body: message, session_id, user_id, profile"},
+                    {"method": "GET", "path": "/api/chat/defaults", "note": "Server-side chat defaults from CHAT_USER_ID / CHAT_PROFILE / CHAT_SESSION_ID"},
                     {"method": "GET", "path": "/api/chat/profiles", "note": "List chat profiles"},
                     {"method": "POST", "path": "/api/chat/profiles/{profile_name}", "note": "Set active profile"},
                     {"method": "GET", "path": "/api/chat/history", "note": "Conversation history"},

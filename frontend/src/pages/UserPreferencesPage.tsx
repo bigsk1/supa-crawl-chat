@@ -22,10 +22,10 @@ const UserPreferencesPage: React.FC = () => {
     if (storedSessionId) {
       setSessionId(storedSessionId);
     }
-    
+
     // If no userId is provided but we have a user profile name, navigate to that user's preferences
     if (!userId && userProfile.name && userProfile.name.trim() !== '') {
-      navigate(`/preferences/${userProfile.name}`);
+      navigate(`/preferences/${encodeURIComponent(userProfile.name)}`);
     }
   }, [userId, userProfile.name, navigate]);
 
@@ -46,12 +46,12 @@ const UserPreferencesPage: React.FC = () => {
       toast.error('Please enter a user ID');
       return;
     }
-    
+
     setIsLoading(true);
-    
+
     // Navigate to the preferences page for the entered user ID
-    navigate(`/preferences/${currentUserId}`);
-    
+    navigate(`/preferences/${encodeURIComponent(currentUserId)}`);
+
     // Reset loading state after navigation
     setTimeout(() => setIsLoading(false), 500);
   };
@@ -68,7 +68,7 @@ const UserPreferencesPage: React.FC = () => {
         subtitle="Manage long-term memory used by chat (API: GET /api/chat/preferences)"
         backTo="/"
       />
-      
+
       {!userId && (
         <Card className="mb-6 p-6 border border-gray-700 bg-gray-800">
           <form onSubmit={handleSubmit} className="flex flex-col md:flex-row gap-4">
@@ -90,8 +90,8 @@ const UserPreferencesPage: React.FC = () => {
               </p>
             </div>
             <div className="flex items-end">
-              <Button 
-                type="submit" 
+              <Button
+                type="submit"
                 disabled={isLoading || !currentUserId.trim()}
                 className="px-6 bg-blue-600 hover:bg-blue-700 text-white"
                 size="lg"
@@ -104,8 +104,8 @@ const UserPreferencesPage: React.FC = () => {
       )}
 
       {userId ? (
-        <UserPreferences 
-          userId={userId} 
+        <UserPreferences
+          userId={userId}
           sessionId={sessionId}
           onPreferenceChange={handlePreferenceChange}
         />
@@ -125,4 +125,4 @@ const UserPreferencesPage: React.FC = () => {
   );
 };
 
-export default UserPreferencesPage; 
+export default UserPreferencesPage;

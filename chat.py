@@ -27,7 +27,7 @@ import time
 from utils import print_success, print_error, print_warning, print_info
 
 from brave_llm_context import user_requests_brave_explicit
-from chat_intent import is_simple_greeting_message
+from chat_intent import is_local_inventory_query, is_simple_greeting_message
 
 # Create a rich console
 console = Console()
@@ -74,6 +74,170 @@ def compact_rag_query(raw: str) -> str:
     s = re.sub(r"^[?.!,;:\s]+", "", s)
     s = re.sub(r"[?.!]+$", "", s).strip()
     return s if len(s) >= 3 else (raw or "").strip()
+
+
+PREFERENCE_TYPE_ALIASES = {
+    "from": "location",
+    "located": "location",
+    "location": "location",
+    "live": "location",
+    "lives": "location",
+    "interested": "interest",
+    "interests": "interest",
+    "skill": "background",
+    "expertise": "background",
+    "work": "background",
+    "works": "background",
+}
+
+PREFERENCE_ALLOWED_TYPES = {
+    "like",
+    "love",
+    "hate",
+    "dislike",
+    "prefer",
+    "interest",
+    "trait",
+    "background",
+    "location",
+    "tool",
+    "goal",
+}
+
+
+def _normalize_preference_type(pref_type: str) -> str:
+    clean = re.sub(r"[^a-z_ -]", "", (pref_type or "").strip().lower()).replace(" ", "_")
+    return PREFERENCE_TYPE_ALIASES.get(clean, clean)
+
+
+def _clean_preference_value(value: str) -> str:
+    clean = re.sub(r"\s+", " ", (value or "").strip(" \t\r\n\"'`.,;:!?"))
+    return clean[:160].strip()
+
+
+def _looks_like_transient_request(text: str) -> bool:
+    clean = (text or "").strip().lower()
+    if not clean:
+        return False
+    request_markers = (
+        "can you",
+        "could you",
+        "would you",
+        "tell me",
+        "what can",
+        "what is",
+        "what are",
+        "search for",
+        "look up",
+        "find ",
+        "show me",
+        "test ",
+    )
+    durable_markers = (
+        "i like",
+        "i love",
+        "i prefer",
+        "my favorite",
+        "i hate",
+        "i dislike",
+        "i live",
+        "i'm in",
+        "i am in",
+        "i'm from",
+        "i am from",
+        "my location",
+        "i work",
+        "i use",
+        "my goal",
+        "i want to learn",
+    )
+    return any(marker in clean for marker in request_markers) and not any(
+        marker in clean for marker in durable_markers
+    )
+
+
+def _has_durable_memory_signal(text: str) -> bool:
+    clean = (text or "").strip().lower()
+    if not clean:
+        return False
+    durable_markers = (
+        "i like",
+        "i love",
+        "i prefer",
+        "my favorite",
+        "i enjoy",
+        "i hate",
+        "i dislike",
+        "i don't like",
+        "i live",
+        "i'm in",
+        "i am in",
+        "i'm from",
+        "i am from",
+        "my location",
+        "i work",
+        "i use",
+        "i usually use",
+        "i always use",
+        "my goal",
+        "i want to learn",
+        "remember that",
+        "remember my",
+    )
+    if any(marker in clean for marker in durable_markers):
+        return True
+    # Local intent can be a useful single-user signal, but it should only become
+    # a location memory, never an interest in the thing being searched.
+    return bool(re.search(r"\b(near|around|in)\s+[A-Z][A-Za-z .'-]+,\s*[A-Z]{2,}\b", text or ""))
+
+
+def _parse_extracted_preferences(raw: str) -> List[Tuple[str, str]]:
+    preferences: List[Tuple[str, str]] = []
+    if not raw:
+        return preferences
+    for line in raw.splitlines():
+        clean = line.strip().lstrip("-*0123456789. ").strip()
+        if not clean or clean.upper() == "NONE":
+            continue
+        if ":" in clean:
+            pref_type, pref_value = clean.split(":", 1)
+        else:
+            parts = clean.split(" ", 1)
+            if len(parts) != 2:
+                continue
+            pref_type, pref_value = parts
+        pref_type = _normalize_preference_type(pref_type)
+        pref_value = _clean_preference_value(pref_value)
+        if pref_type in PREFERENCE_ALLOWED_TYPES and pref_value:
+            preferences.append((pref_type, pref_value))
+    return preferences
+
+
+def _is_noisy_preference(pref_type: str, pref_value: str, source_text: str) -> bool:
+    value = (pref_value or "").strip().lower()
+    source = (source_text or "").strip().lower()
+    if len(value) < 2:
+        return True
+    if len(value.split()) > 12:
+        return True
+    noisy_values = {
+        "latest movies",
+        "brave search",
+        "search",
+        "test",
+        "this",
+        "that",
+        "it",
+    }
+    if value in noisy_values and not any(marker in source for marker in ("i like", "i prefer", "i use")):
+        return True
+    if pref_type in {"interest", "tool"} and _looks_like_transient_request(source):
+        return True
+    if pref_type != "location" and any(
+        marker in source for marker in ("tell me about", "what can you tell", "what is ", "what are ")
+    ) and not any(marker in source for marker in ("i like", "i love", "i prefer", "i use", "i work")):
+        return True
+    return False
 
 
 def _query_suggests_followup(clean_query: str) -> bool:
@@ -406,6 +570,33 @@ class ChatBot:
         """If True, skip vector search (pure small-talk)."""
         return is_simple_greeting_message(message)
 
+    def format_crawled_sites_inventory(self) -> str:
+        """Return a direct inventory of crawled sites from the local database."""
+        sites = self.crawler.db_client.get_all_sites()
+        if not sites:
+            return "You do not have any crawled sites stored yet."
+
+        lines = [f"You currently have {len(sites)} crawled site{'s' if len(sites) != 1 else ''}:"]
+        for site in sites:
+            site_id = site.get("id")
+            name = site.get("name") or "Untitled site"
+            url = site.get("url") or ""
+            try:
+                page_count = self.crawler.db_client.get_page_count_by_site_id(site_id, include_chunks=False)
+                total_count = self.crawler.db_client.get_page_count_by_site_id(site_id, include_chunks=True)
+                chunk_count = max(0, total_count - page_count)
+                count_text = f"{page_count} page{'s' if page_count != 1 else ''}, {chunk_count} chunk{'s' if chunk_count != 1 else ''}"
+            except Exception:
+                count_text = "page count unavailable"
+
+            if url:
+                lines.append(f"- {name} ({count_text}) - {url}")
+            else:
+                lines.append(f"- {name} ({count_text})")
+
+        lines.append("\nYou can ask me about any of these sites by name, topic, URL, or documentation area.")
+        return "\n".join(lines)
+
     def load_conversation_history(self):
         """Load conversation history from the database."""
         try:
@@ -549,40 +740,35 @@ class ChatBot:
         # Base metadata with profile information
         metadata = {"profile": self.profile_name}
 
-        # Check for preference keywords - EXPANDED list
-        preference_keywords = [
-            # Explicit preferences
-            "like", "love", "prefer", "favorite", "enjoy", "hate", "dislike",
-            # Additional markers
-            "interested in", "fond of", "care about", "passionate about",
-            "can't stand", "don't like", "don't care for", "avoid"
-        ]
+        should_extract_memory = _has_durable_memory_signal(content)
 
-        # Enhanced preference detection
-        has_preference = False
-        for keyword in preference_keywords:
-            if keyword in content.lower():
-                has_preference = True
-                break
-
-        # If the message might contain a preference, use the LLM to extract it properly
-        if has_preference or len(content.split()) >= 10:  # Check longer messages too
+        # If the message might contain durable user memory, use the LLM to extract it.
+        if should_extract_memory:
             try:
                 # Create a more nuanced prompt for the LLM to extract preferences
-                prompt = f"""Extract any user preferences from this message: "{content}"
+                prompt = f"""Extract durable user memory from this message.
+
+Message:
+{content}
 
 Look for:
-1. Direct preferences (like, love, prefer, favorite, enjoy, hate, dislike)
-2. Implied preferences (interested in, fond of, passionate about)
-3. Important personal details that should be remembered for future conversation
-4. Attitudes or opinions expressed about topics
+1. Explicit preferences: "I like/love/prefer/hate/dislike..."
+2. Stable user facts: location, background, goals, tools they personally use
+3. Local intent: if the user asks for local results "in/near/around PLACE", extract only "location: PLACE"
 
-If you find any preferences or important details, format each as "TYPE VALUE" (e.g., "like Python", "hate brussels sprouts", "interested AI", "from Seattle")
+Do NOT save one-off search topics, tool requests, test prompts, or subjects the user merely asks about.
+Examples to ignore:
+- "can you use brave search..."
+- "tell me about Ollama"
+- "what is OpenCL"
+- "find latest movies"
 
-For TYPE, use one of: like, love, hate, dislike, prefer, interest, trait, background
+Format each memory as "TYPE: VALUE".
+
+Allowed TYPE values: like, love, hate, dislike, prefer, interest, trait, background, location, tool, goal.
 
 If there are no clear preferences or important details, respond with "NONE".
-Extract up to 3 key preferences or details, prioritizing the most salient ones.
+Extract up to 2 memories, prioritizing stable facts over temporary intent.
 """
 
                 # Use a smaller model for this extraction
@@ -600,42 +786,42 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
 
                 # Only save if it's a valid preference
                 if extraction_result and extraction_result != "NONE":
-                    # Split multiple preferences (one per line)
-                    preferences = [pref.strip() for pref in extraction_result.split('\n') if pref.strip() and pref.strip() != "NONE"]
+                    preferences = [
+                        pref
+                        for pref in _parse_extracted_preferences(extraction_result)
+                        if not _is_noisy_preference(pref[0], pref[1], content)
+                    ]
 
                     # Store the most important preference in message metadata
                     if preferences:
-                        metadata["preference"] = preferences[0]
-                        console.print(f"[blue]Extracted primary preference: {preferences[0]}[/blue]")
+                        metadata["preference"] = f"{preferences[0][0]} {preferences[0][1]}"
+                        console.print(f"[blue]Extracted primary preference: {metadata['preference']}[/blue]")
 
                     # If we have a user ID, save all preferences to the user_preferences table
                     if self.user_id:
-                        for preference in preferences:
+                        for pref_type, pref_value in preferences:
                             try:
                                 # Get a confidence score based on the clarity of the preference
                                 # Direct preferences get higher confidence
-                                direct_preference = any(f"{keyword} " in content.lower() for keyword in ["like ", "love ", "hate ", "prefer ", "favorite "])
-                                confidence = 0.9 if direct_preference else 0.75
+                                direct_preference = any(
+                                    f"{keyword} " in content.lower()
+                                    for keyword in ["like", "love", "hate", "prefer", "favorite"]
+                                )
+                                confidence = 0.9 if direct_preference else 0.82 if pref_type == "location" else 0.75
 
-                                # Extract preference type and value
-                                parts = preference.split(" ", 1)
-                                if len(parts) == 2:
-                                    pref_type = parts[0]  # e.g., "like", "hate"
-                                    pref_value = parts[1]  # e.g., "corvettes", "brussels sprouts"
+                                # Save the preference to the database
+                                pref_id = self.crawler.db_client.save_user_preference(
+                                    user_id=self.user_id,
+                                    preference_type=pref_type,
+                                    preference_value=pref_value,
+                                    context=content,
+                                    confidence=confidence,
+                                    source_session=self.session_id,
+                                    metadata={"auto_extracted": True},
+                                )
 
-                                    # Save the preference to the database
-                                    self.crawler.db_client.save_user_preference(
-                                        user_id=self.user_id,
-                                        preference_type=pref_type,
-                                        preference_value=pref_value,
-                                        context=content,
-                                        confidence=confidence,
-                                        source_session=self.session_id
-                                    )
-
+                                if pref_id != -1:
                                     console.print(f"[green]Saved preference to database: {pref_type} {pref_value} (confidence: {confidence:.2f})[/green]")
-                                else:
-                                    console.print(f"[yellow]Could not split preference into type and value: {preference}[/yellow]")
                             except Exception as e:
                                 console.print(f"[red]Error saving preference to database: {e}[/red]")
             except Exception as e:
@@ -1465,6 +1651,11 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
         user_queries = ["my name", "who am i", "what's my name", "what is my name"]
         is_user_query = any(user_query in clean_query for user_query in user_queries)
 
+        if is_local_inventory_query(query):
+            response_text = self.format_crawled_sites_inventory()
+            self.add_assistant_message(response_text)
+            return response_text
+
         # Check for time-related queries - make this more precise
         time_queries = ["what time", "what is the time", "current time", "tell me the time",
                       "what date", "what is the date", "current date", "tell me the date",
@@ -1694,11 +1885,15 @@ Extract up to 3 key preferences or details, prioritizing the most salient ones.
         user_preferences = []
         if self.user_id:
             try:
-                # Get preferences from the database with a lower minimum confidence
-                db_preferences = self.crawler.db_client.get_user_preferences(
+                # Get only memories that are relevant to this turn, plus a few
+                # stable identity/background memories. This keeps one-off old
+                # interests from crowding out the crawled RAG context.
+                db_preferences = self.crawler.db_client.get_relevant_user_preferences(
                     user_id=self.user_id,
                     min_confidence=0.65,  # Lowered threshold to capture more preferences
-                    active_only=True
+                    active_only=True,
+                    query=query,
+                    limit=int(os.getenv("CHAT_MEMORY_LIMIT", "8")),
                 )
 
                 # Format preferences for the system prompt. IMPORTANT: do NOT use the

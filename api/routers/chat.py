@@ -14,6 +14,7 @@ from brave_llm_context import (
     format_grounding_for_prompt,
     should_merge_brave,
 )
+from chat_intent import is_local_inventory_query
 
 logger = get_logger(__name__)
 
@@ -26,10 +27,10 @@ class Message(BaseModel):
     role: str
     content: str
     timestamp: Optional[str] = None
-    
+
     class Config:
         arbitrary_types_allowed = True
-        
+
     @classmethod
     def from_dict(cls, message_dict):
         """Create a Message from a dictionary, converting datetime to string if needed."""
@@ -64,6 +65,11 @@ class ProfileListResponse(BaseModel):
     count: int
     active_profile: str
 
+class ChatDefaultsResponse(BaseModel):
+    user_id: Optional[str] = None
+    profile: str
+    session_id: Optional[str] = None
+
 class ConversationHistoryResponse(BaseModel):
     messages: List[Message]
     count: int
@@ -82,10 +88,11 @@ class UserPreference(BaseModel):
     source_session: Optional[str] = None
     is_active: bool = True
     metadata: Optional[Dict[str, Any]] = None
-    
+    relevance_score: Optional[float] = None
+
     class Config:
         arbitrary_types_allowed = True
-        
+
     @classmethod
     def from_dict(cls, pref_dict):
         """Create a UserPreference from a dictionary, converting datetime to string if needed."""
@@ -143,7 +150,7 @@ async def chat(
 ):
     """
     Send a message to the chat bot and get a response.
-    
+
     - **message**: The user's message
     - **session_id**: Session ID for persistent conversations
     - **user_id**: User ID for tracking conversations
@@ -157,7 +164,7 @@ async def chat(
     try:
         # Generate a session ID if not provided
         session_id = chat_request.session_id or str(uuid.uuid4())
-        
+
         # Initialize ChatBot
         chat_bot = get_chat_bot(
             model=model,
@@ -167,7 +174,7 @@ async def chat(
             user_id=chat_request.user_id,
             profile=chat_request.profile or "default"
         )
-        
+
         # First message in a session should be about crawled sites, not random topics
         is_first_message = False
         try:
@@ -176,13 +183,14 @@ async def chat(
         except Exception as history_error:
             logger.warning("load_conversation_history: %s", history_error)
             is_first_message = True
-            
+
         is_greeting = chat_bot.should_skip_crawl_rag_for_message(chat_request.message)
+        is_inventory_query = is_local_inventory_query(chat_request.message)
 
         # For true greetings, skip retrieval. Otherwise pull RAG context so we can echo it
         # in the response payload (the main prompt path inside get_response() also retrieves).
         context = None
-        if include_context and not is_greeting:
+        if include_context and not is_greeting and not is_inventory_query:
             try:
                 context = chat_bot.search_for_context(chat_request.message)
             except Exception as search_error:
@@ -190,12 +198,12 @@ async def chat(
                 context = None
 
         # Modify the system prompt for the first message to focus on crawled sites
-        if is_first_message and not is_greeting:
+        if is_first_message and not is_greeting and not is_inventory_query:
             # Get all available sites to mention in the greeting
             try:
                 sites = chat_bot.crawler.db_client.get_all_sites()
                 site_names = [site.get("name", "Unknown") for site in sites]
-                
+
                 if site_names:
                     sites_str = ", ".join(site_names)
                     chat_bot.add_system_message(
@@ -215,12 +223,12 @@ async def chat(
                     "Do not mention unrelated topics unless the user asks about them.",
                     metadata={"llm_inject": True},
                 )
-        
+
         # The strong "prioritize crawled sites" instruction is now injected inside
         # ChatBot._prepare_messages_for_llm so the CLI and API grounded the same way.
 
         # Optional Brave Search LLM Context (web grounding) — BRAVE_API_KEY + BRAVE_WEB_CONTEXT
-        if not is_greeting:
+        if not is_greeting and not is_inventory_query:
             try:
                 brave_mode = (os.getenv("BRAVE_WEB_CONTEXT") or "when_empty").strip()
                 weak_thr = float(os.getenv("BRAVE_WEAK_THRESHOLD", "0.35"))
@@ -255,14 +263,14 @@ async def chat(
                                 brave_used = True
             except Exception as brave_err:
                 logger.warning("Brave LLM Context skipped: %s", brave_err)
-        
+
         # Get response
         try:
             response = chat_bot.get_response(chat_request.message)
         except Exception as response_error:
             logger.exception("get_response failed: %s", response_error)
             response = f"I'm sorry, but I encountered an error processing your request. Error details: {str(response_error)}"
-        
+
         # Prepare the response
         chat_response = {
             "response": response,
@@ -272,16 +280,16 @@ async def chat(
             "brave_sources": brave_sources,
             "brave_preview": brave_preview,
         }
-        
+
         # Include context in the response only if it's not a greeting
         if context and not is_greeting:
             chat_response["context"] = context
-        
+
         # Include conversation history if requested
         if include_history:
             # Load conversation history
             chat_bot.load_conversation_history()
-            
+
             # Convert to Message model
             messages = []
             for msg in chat_bot.conversation_history:
@@ -290,7 +298,7 @@ async def chat(
                     content=msg["content"],
                     timestamp=msg.get("timestamp")
                 ))
-            
+
             chat_response["conversation_history"] = messages
 
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
@@ -319,6 +327,18 @@ async def chat(
             detail=f"Error in chat: {str(e)}"
         )
 
+@router.get("/defaults", response_model=ChatDefaultsResponse)
+async def chat_defaults():
+    """
+    Return server-side chat defaults from env so the web UI can initialize a
+    single-user local profile without duplicating CHAT_* settings into Vite env.
+    """
+    return ChatDefaultsResponse(
+        user_id=(os.getenv("CHAT_USER_ID") or "").strip() or None,
+        profile=(os.getenv("CHAT_PROFILE") or "default").strip() or "default",
+        session_id=(os.getenv("CHAT_SESSION_ID") or "").strip() or None,
+    )
+
 @router.get("/profiles", response_model=ProfileListResponse)
 async def list_profiles(
     session_id: Optional[str] = Query(None, description="Session ID to get active profile"),
@@ -326,7 +346,7 @@ async def list_profiles(
 ):
     """
     List all available profiles.
-    
+
     - **session_id**: Optional session ID to get active profile
     - **user_id**: Optional user ID
     """
@@ -336,11 +356,11 @@ async def list_profiles(
             session_id=session_id,
             user_id=user_id
         )
-        
+
         # Get profiles
         profiles = chat_bot.profiles
         active_profile = chat_bot.current_profile
-        
+
         # Convert to ProfileResponse model
         profile_list = []
         for name, profile in profiles.items():
@@ -349,7 +369,7 @@ async def list_profiles(
                 description=profile.get("description", ""),
                 is_active=(name == active_profile)
             ))
-        
+
         return ProfileListResponse(
             profiles=profile_list,
             count=len(profile_list),
@@ -369,7 +389,7 @@ async def set_profile(
 ):
     """
     Set the active profile for a session.
-    
+
     - **profile_name**: The name of the profile to set
     - **session_id**: Session ID
     - **user_id**: Optional user ID
@@ -381,7 +401,7 @@ async def set_profile(
             user_id=user_id,
             profile=profile_name
         )
-        
+
         # Return success response
         return {
             "success": True,
@@ -402,22 +422,22 @@ async def get_conversation_history(
 ):
     """
     Get conversation history for a session.
-    
+
     - **session_id**: The session ID
     - **user_id**: Optional user ID
     """
     try:
         # Initialize ChatBot
         chat_bot = get_chat_bot(session_id=session_id, user_id=user_id)
-        
+
         # Load conversation history
         chat_bot.load_conversation_history()
-        
+
         # Convert to Message objects
         messages = []
         for msg in chat_bot.conversation_history:
             messages.append(Message.from_dict(msg))
-        
+
         return ConversationHistoryResponse(
             messages=messages,
             count=len(messages),
@@ -437,17 +457,17 @@ async def clear_conversation_history(
 ):
     """
     Clear conversation history for a session.
-    
+
     - **session_id**: The session ID
     - **user_id**: Optional user ID
     """
     try:
         # Initialize ChatBot
         chat_bot = get_chat_bot(session_id=session_id, user_id=user_id)
-        
+
         # Clear conversation history
         chat_bot.clear_conversation_history()
-        
+
         return {
             "message": "Conversation history cleared",
             "session_id": session_id,
@@ -466,10 +486,12 @@ async def get_user_preferences(
     user_id: str = Query(..., description="User ID"),
     min_confidence: float = Query(0.0, description="Minimum confidence score (0-1)"),
     active_only: bool = Query(True, description="Whether to return only active preferences"),
+    query: Optional[str] = Query(None, description="Optional current question to rank relevant preferences"),
+    limit: int = Query(50, ge=1, le=200, description="Maximum preferences to return when query ranking is used"),
 ):
     """
     Get preferences for a user.
-    
+
     - **user_id**: The user ID
     - **min_confidence**: Minimum confidence score (0-1) for preferences to return
     - **active_only**: Whether to return only active preferences
@@ -477,12 +499,21 @@ async def get_user_preferences(
     try:
         # Initialize ChatBot
         chat_bot = get_chat_bot(user_id=user_id)
-        
+
         # Get preferences
-        preferences = chat_bot.crawler.db_client.get_user_preferences(
-            user_id, min_confidence, active_only
-        )
-        
+        if query:
+            preferences = chat_bot.crawler.db_client.get_relevant_user_preferences(
+                user_id=user_id,
+                query=query,
+                min_confidence=min_confidence,
+                active_only=active_only,
+                limit=limit,
+            )
+        else:
+            preferences = chat_bot.crawler.db_client.get_user_preferences(
+                user_id, min_confidence, active_only
+            )
+
         # Convert to Pydantic models
         preference_models = []
         for pref in preferences:
@@ -492,9 +523,9 @@ async def get_user_preferences(
             else:
                 # Default to True if not present (for backward compatibility)
                 pref['is_active'] = True if active_only else False
-                
+
             preference_models.append(UserPreference.from_dict(pref))
-        
+
         return UserPreferenceResponse(
             preferences=preference_models,
             count=len(preference_models),
@@ -514,7 +545,7 @@ async def create_user_preference(
 ):
     """
     Create a new user preference.
-    
+
     - **user_id**: The user ID
     - **session_id**: Optional session ID
     - **preference**: The preference to create
@@ -522,7 +553,7 @@ async def create_user_preference(
     try:
         # Initialize ChatBot
         chat_bot = get_chat_bot(user_id=user_id, session_id=session_id)
-        
+
         # Save the preference to the database
         preference_id = chat_bot.crawler.db_client.save_user_preference(
             user_id=user_id,
@@ -533,10 +564,10 @@ async def create_user_preference(
             source_session=session_id,
             metadata=preference.metadata
         )
-        
+
         # Get the created preference
         created_preference = chat_bot.crawler.db_client.get_preference_by_id(preference_id)
-        
+
         return UserPreference.from_dict(created_preference)
     except Exception as e:
         raise HTTPException(
@@ -551,38 +582,38 @@ async def delete_user_preference(
 ):
     """
     Delete a user preference.
-    
+
     - **preference_id**: The ID of the preference to delete
     - **user_id**: The user ID
     """
     try:
         # Initialize ChatBot
         chat_bot = get_chat_bot(user_id=user_id)
-        
+
         # Get the preference to verify ownership
         preference = chat_bot.crawler.db_client.get_preference_by_id(preference_id)
-        
+
         if not preference:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Preference with ID {preference_id} not found"
             )
-        
+
         if preference.get("user_id") != user_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You do not have permission to delete this preference"
             )
-        
+
         # Delete the preference
         success = chat_bot.crawler.db_client.delete_user_preference(preference_id)
-        
+
         if not success:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to delete preference"
             )
-        
+
         return {
             "message": f"Preference with ID {preference_id} deleted",
             "id": preference_id,
@@ -603,38 +634,38 @@ async def deactivate_user_preference(
 ):
     """
     Deactivate a user preference.
-    
+
     - **preference_id**: The ID of the preference to deactivate
     - **user_id**: The user ID
     """
     try:
         # Initialize ChatBot
         chat_bot = get_chat_bot(user_id=user_id)
-        
+
         # Get the preference to verify ownership
         preference = chat_bot.crawler.db_client.get_preference_by_id(preference_id)
-        
+
         if not preference:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Preference with ID {preference_id} not found"
             )
-        
+
         if preference.get("user_id") != user_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You do not have permission to deactivate this preference"
             )
-        
+
         # Deactivate the preference
         success = chat_bot.crawler.db_client.deactivate_user_preference(preference_id)
-        
+
         if not success:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to deactivate preference"
             )
-        
+
         return {
             "message": f"Preference with ID {preference_id} deactivated",
             "id": preference_id,
@@ -655,38 +686,38 @@ async def activate_user_preference(
 ):
     """
     Activate a user preference.
-    
+
     - **preference_id**: The ID of the preference to activate
     - **user_id**: The user ID
     """
     try:
         # Initialize ChatBot
         chat_bot = get_chat_bot(user_id=user_id)
-        
+
         # Get the preference to verify ownership
         preference = chat_bot.crawler.db_client.get_preference_by_id(preference_id)
-        
+
         if not preference:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Preference with ID {preference_id} not found"
             )
-        
+
         if preference.get("user_id") != user_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You do not have permission to activate this preference"
             )
-        
+
         # Activate the preference
         success = chat_bot.crawler.db_client.activate_user_preference(preference_id)
-        
+
         if not success:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to activate preference"
             )
-        
+
         return {
             "message": f"Preference with ID {preference_id} activated",
             "id": preference_id,
@@ -706,22 +737,22 @@ async def clear_user_preferences(
 ):
     """
     Clear all preferences for a user.
-    
+
     - **user_id**: The user ID
     """
     try:
         # Initialize ChatBot
         chat_bot = get_chat_bot(user_id=user_id)
-        
+
         # Clear preferences
         success = chat_bot.crawler.db_client.clear_user_preferences(user_id)
-        
+
         if not success:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to clear preferences"
             )
-        
+
         return {
             "message": f"All preferences cleared for user {user_id}",
             "user_id": user_id
@@ -730,4 +761,4 @@ async def clear_user_preferences(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error clearing user preferences: {str(e)}"
-        ) 
+        )

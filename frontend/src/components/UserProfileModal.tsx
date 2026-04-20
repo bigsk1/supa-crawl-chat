@@ -1,12 +1,12 @@
-import React, { useState, useRef } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useUser } from '@/context/UserContext';
 import { useNavigate } from 'react-router-dom';
-import { 
-  Dialog, 
-  DialogContent, 
-  DialogHeader, 
-  DialogTitle, 
-  DialogFooter 
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -24,6 +24,12 @@ const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onClose }) 
   const [name, setName] = useState(userProfile.name);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (isOpen) {
+      setName(userProfile.name);
+    }
+  }, [isOpen, userProfile.name]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -45,7 +51,7 @@ const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onClose }) 
 
   const handleManagePreferences = () => {
     onClose();
-    navigate(`/preferences/${userProfile.name}`);
+    navigate(`/preferences/${encodeURIComponent(userProfile.name)}`);
   };
 
   return (
@@ -54,10 +60,10 @@ const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onClose }) 
         <DialogHeader>
           <DialogTitle className="text-gray-200">Edit Profile</DialogTitle>
         </DialogHeader>
-        
+
         <form onSubmit={handleSubmit} className="space-y-6">
           <div className="flex flex-col items-center">
-            <div 
+            <div
               className="cursor-pointer"
               onClick={() => fileInputRef.current?.click()}
             >
@@ -141,4 +147,4 @@ const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onClose }) 
   );
 };
 
-export default UserProfileModal; 
+export default UserProfileModal;

@@ -4,6 +4,20 @@
 
 The User Preference System is a sophisticated component of the Supa Crawl Chat application that enables the AI to remember and utilize information about users across conversations. This document explains how preferences are extracted, stored, retrieved, and utilized throughout the application.
 
+## Current Behavior
+
+This app is optimized for a local single-user setup. The browser keeps a local user profile in `localStorage`, and the backend exposes `GET /api/chat/defaults` so the UI can initialize that profile from `CHAT_USER_ID` without duplicating the setting in frontend env. If `CHAT_USER_ID=bigsk1` and the browser profile is still the generic `User`, the UI will switch to `bigsk1` automatically after startup/login.
+
+Conversation history and preferences are separate:
+
+- `chat_conversations` is scoped by `session_id` and preserves turns for a specific chat session.
+- `user_preferences` is scoped by `user_id` and acts as long-term memory across sessions.
+- Chat injects only active preferences for the current `user_id`.
+- Chat now ranks memories for the current question instead of blindly injecting the same top confidence/recency rows every turn.
+- Stored noise from older extraction logic, such as one-off tool requests or search topics, is filtered out of prompt injection when possible. Those rows may still appear in the Preferences UI until manually deactivated/deleted.
+
+The extraction path is intentionally automatic: there is no manual approval queue. The model is prompted to save durable memory only, such as explicit preferences, stable user facts, location hints, goals, background, or tools the user personally uses. It should ignore one-off requests like “tell me about Ollama,” “test Brave Search,” or “find latest movies.”
+
 ## Table of Contents
 
 1. [Core Concepts](#core-concepts)
@@ -170,6 +184,24 @@ The LLM determines confidence scores based on:
 
 For authentication, rate limits, and the full HTTP surface (search, crawl, chat, sites, pages), see **[API.md](./API.md)**. Preference routes below are under **`/api/chat`** and follow the same auth rules as the rest of the API.
 
+### Chat Defaults
+
+```
+GET /api/chat/defaults
+```
+
+Returns server-side defaults used by the web UI:
+
+```json
+{
+  "user_id": "bigsk1",
+  "profile": "default",
+  "session_id": null
+}
+```
+
+These values come from `CHAT_USER_ID`, `CHAT_PROFILE`, and `CHAT_SESSION_ID`.
+
 ### List User Preferences
 
 ```
@@ -180,10 +212,18 @@ GET /api/chat/preferences
 - `user_id` (required): The user ID
 - `min_confidence` (optional): Minimum confidence score (default: 0.0)
 - `active_only` (optional): Whether to return only active preferences (default: true)
+- `query` (optional): Rank preferences by relevance to a current question
+- `limit` (optional): Maximum ranked preferences to return when `query` is provided
 
 **Example:**
 ```bash
 curl -X GET "http://localhost:8001/api/chat/preferences?user_id=TestUser&min_confidence=0.7&active_only=true"
+```
+
+Relevant-memory example:
+
+```bash
+curl -X GET "http://localhost:8001/api/chat/preferences?user_id=bigsk1&query=what%20movies%20are%20near%20me&min_confidence=0.7&limit=5"
 ```
 
 **Response:**
@@ -577,4 +617,4 @@ These technologies should give you a strong foundation in frontend development a
 2. **User Control**: Allow users to view and manage their stored preferences
 3. **Transparency**: Be clear about what information is being stored
 4. **Data Protection**: Implement appropriate security measures for user data
-5. **Compliance**: Ensure compliance with relevant privacy regulations 
+5. **Compliance**: Ensure compliance with relevant privacy regulations

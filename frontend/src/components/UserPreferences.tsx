@@ -320,6 +320,7 @@ const UserPreferences: React.FC<UserPreferencesProps> = ({ userId: initialUserId
     try {
       const success = await apiService.deleteUserPreference(userId, id);
       if (success) {
+        setPreferences(prevPrefs => prevPrefs.filter(pref => pref.id !== id));
         showNotification('Preference deleted successfully', 'success');
         loadPreferences();
         if (onPreferenceChange) onPreferenceChange();
@@ -772,4 +773,4 @@ const UserPreferences: React.FC<UserPreferencesProps> = ({ userId: initialUserId
   );
 };
 
-export default UserPreferences; 
+export default UserPreferences;

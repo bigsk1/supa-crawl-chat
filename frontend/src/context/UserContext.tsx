@@ -1,5 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { v4 as uuidv4 } from 'uuid';
+import { apiService } from '@/api/apiService';
+import { useAuth } from '@/context/AuthContext';
 
 interface UserProfile {
   id: string;
@@ -28,7 +30,7 @@ const UserContext = createContext<UserContextType | undefined>(undefined);
 
 // Common keywords that might indicate preferences
 const PREFERENCE_KEYWORDS = [
-  'like', 'love', 'enjoy', 'prefer', 'favorite', 'interested in', 
+  'like', 'love', 'enjoy', 'prefer', 'favorite', 'interested in',
   'passionate about', 'hate', 'dislike', 'don\'t like'
 ];
 
@@ -41,6 +43,7 @@ const createNewProfile = (): UserProfile => {
 };
 
 export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  const { ready, token } = useAuth();
   const [userProfile, setUserProfile] = useState<UserProfile>(() => {
     // Try to load from localStorage
     const savedProfile = localStorage.getItem('userProfile');
@@ -51,10 +54,43 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         console.error('Failed to parse user profile from localStorage:', e);
       }
     }
-    
+
     // If no saved profile or parsing failed, create a new one
     return createNewProfile();
   });
+
+  useEffect(() => {
+    if (!ready) return;
+    let cancelled = false;
+
+    (async () => {
+      const defaults = await apiService.getChatDefaults();
+      const defaultUserId =
+        (defaults?.user_id || import.meta.env.VITE_DEFAULT_USER_ID || '').trim();
+      if (!defaultUserId || cancelled) return;
+
+      setUserProfile(prev => {
+        const currentName = (prev.name || '').trim();
+        const shouldUseServerDefault =
+          !currentName ||
+          currentName === defaultUserProfile.name;
+
+        if (!shouldUseServerDefault || currentName === defaultUserId) {
+          return prev;
+        }
+
+        return {
+          ...prev,
+          name: defaultUserId,
+          id: prev.id || uuidv4(),
+        };
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [ready, token]);
 
   // Save to localStorage whenever profile changes
   useEffect(() => {
@@ -74,7 +110,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!preference.trim() || userProfile.preferences.includes(preference.trim())) {
       return;
     }
-    
+
     setUserProfile(prev => ({
       ...prev,
       preferences: [...prev.preferences, preference.trim()]
@@ -95,12 +131,12 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // Extract potential preferences from text
   const extractPreferencesFromText = (text: string): string[] => {
     const foundPreferences: string[] = [];
-    
+
     // Check for preference keywords
     PREFERENCE_KEYWORDS.forEach(keyword => {
       const regex = new RegExp(`${keyword}\\s+([\\w\\s]+?)(?:\\.|,|;|:|!|\\?|$)`, 'gi');
       let match;
-      
+
       while ((match = regex.exec(text)) !== null) {
         if (match[1] && match[1].trim()) {
           const preference = match[1].trim();
@@ -111,7 +147,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         }
       }
     });
-    
+
     return foundPreferences;
   };
 
@@ -140,4 +176,4 @@ export const useUser = (): UserContextType => {
   return context;
 };
 
-export default UserContext; 
+export default UserContext;

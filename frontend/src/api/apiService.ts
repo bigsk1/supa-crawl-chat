@@ -170,17 +170,26 @@ apiClient.interceptors.response.use(
   },
   error => {
     const status = error.response?.status;
+    const requestUrl = error.config?.url || '';
+    const requestMethod = error.config?.method?.toLowerCase();
+    const isStalePreferenceDelete =
+      status === 404 &&
+      requestMethod === 'delete' &&
+      requestUrl.includes('/chat/preferences/');
+
     if (status === 401 && getWebUiToken()) {
       clearWebUiToken();
       if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
         window.location.assign('/login');
       }
     }
-    console.error('API Error:',
-      error.response?.status || 'Network Error',
-      error.config?.url || 'Unknown URL',
-      error.response?.data || error.message
-    );
+    if (!isStalePreferenceDelete) {
+      console.error('API Error:',
+        error.response?.status || 'Network Error',
+        error.config?.url || 'Unknown URL',
+        error.response?.data || error.message
+      );
+    }
     return Promise.reject(error);
   }
 );
@@ -330,6 +339,12 @@ export interface ProfilesResponse {
   active_profile: string;
 }
 
+export interface ChatDefaults {
+  user_id?: string | null;
+  profile: string;
+  session_id?: string | null;
+}
+
 export interface UserPreference {
   id?: number;
   user_id: string;
@@ -343,6 +358,7 @@ export interface UserPreference {
   source_session?: string;
   is_active: boolean;
   metadata?: any;
+  relevance_score?: number;
 }
 
 export interface UserPreferenceResponse {
@@ -353,6 +369,16 @@ export interface UserPreferenceResponse {
 
 // API service
 export const apiService = {
+  getChatDefaults: async (): Promise<ChatDefaults | null> => {
+    try {
+      const response = await apiClient.get('/chat/defaults');
+      return response.data;
+    } catch (error) {
+      console.error('Error getting chat defaults:', error);
+      return null;
+    }
+  },
+
   // Site methods
   getSites: async (): Promise<Site[]> => {
     try {
@@ -735,13 +761,21 @@ export const apiService = {
   },
 
   // User Preferences methods
-  getUserPreferences: async (userId: string, minConfidence: number = 0.7, activeOnly: boolean = true): Promise<UserPreference[]> => {
+  getUserPreferences: async (
+    userId: string,
+    minConfidence: number = 0.7,
+    activeOnly: boolean = true,
+    query?: string,
+    limit?: number
+  ): Promise<UserPreference[]> => {
     try {
       const response = await apiClient.get('/chat/preferences', {
         params: {
           user_id: userId,
           min_confidence: minConfidence,
-          active_only: activeOnly
+          active_only: activeOnly,
+          ...(query ? { query } : {}),
+          ...(limit ? { limit } : {}),
         }
       });
 
@@ -779,6 +813,7 @@ export const apiService = {
         params: { user_id: userId }
       });
 
+      invalidateApiCacheUrlPrefix('/chat/preferences');
       return response.data;
     } catch (error) {
       console.error('Error adding user preference:', error);
@@ -791,8 +826,13 @@ export const apiService = {
       await apiClient.delete(`/chat/preferences/${preferenceId}`, {
         params: { user_id: userId }
       });
+      invalidateApiCacheUrlPrefix('/chat/preferences');
       return true;
     } catch (error) {
+      if (axios.isAxiosError(error) && error.response?.status === 404) {
+        invalidateApiCacheUrlPrefix('/chat/preferences');
+        return true;
+      }
       console.error(`Error deleting preference ${preferenceId}:`, error);
       return false;
     }
@@ -803,6 +843,7 @@ export const apiService = {
       await apiClient.put(`/chat/preferences/${preferenceId}/deactivate`, null, {
         params: { user_id: userId }
       });
+      invalidateApiCacheUrlPrefix('/chat/preferences');
       return true;
     } catch (error) {
       console.error(`Error deactivating preference ${preferenceId}:`, error);
@@ -815,6 +856,7 @@ export const apiService = {
       await apiClient.put(`/chat/preferences/${preferenceId}/activate`, null, {
         params: { user_id: userId }
       });
+      invalidateApiCacheUrlPrefix('/chat/preferences');
       return true;
     } catch (error) {
       console.error(`Error activating preference ${preferenceId}:`, error);
@@ -827,6 +869,7 @@ export const apiService = {
       await apiClient.delete('/chat/preferences', {
         params: { user_id: userId }
       });
+      invalidateApiCacheUrlPrefix('/chat/preferences');
       return true;
     } catch (error) {
       console.error(`Error clearing preferences for user ${userId}:`, error);

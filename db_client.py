@@ -16,6 +16,19 @@ load_dotenv()
 class SupabaseClient:
     """Client for interacting with the Supabase database."""
 
+    _PREFERENCE_TYPE_ALIASES = {
+        "from": "location",
+        "located": "location",
+        "live": "location",
+        "lives": "location",
+        "interested": "interest",
+        "interests": "interest",
+        "skill": "background",
+        "expertise": "background",
+        "work": "background",
+        "works": "background",
+    }
+
     def __init__(self, host: Optional[str] = None, port: Optional[int] = None,
                 database: Optional[str] = None, user: Optional[str] = None,
                 password: Optional[str] = None):
@@ -101,6 +114,83 @@ class SupabaseClient:
         if not content:
             return None
         return hashlib.sha256(content.encode("utf-8", errors="ignore")).hexdigest()
+
+    @classmethod
+    def _normalize_preference_type(cls, preference_type: str) -> str:
+        clean = re.sub(r"[^a-z_ -]", "", (preference_type or "").strip().lower()).replace(" ", "_")
+        return cls._PREFERENCE_TYPE_ALIASES.get(clean, clean)
+
+    @staticmethod
+    def _clean_preference_value(preference_value: str) -> str:
+        return re.sub(r"\s+", " ", (preference_value or "").strip(" \t\r\n\"'`.,;:!?"))[:160].strip()
+
+    @staticmethod
+    def _preference_tokens(text: str) -> set:
+        return {
+            token
+            for token in re.findall(r"[a-z0-9][a-z0-9+#.-]*", (text or "").lower())
+            if len(token) > 2 and token not in {"the", "and", "for", "with", "about", "what", "can", "you"}
+        }
+
+    @staticmethod
+    def _preference_context_looks_transient(context: str) -> bool:
+        clean = (context or "").strip().lower()
+        if not clean:
+            return False
+        request_markers = (
+            "can you",
+            "could you",
+            "would you",
+            "tell me",
+            "what can",
+            "what is",
+            "what are",
+            "search for",
+            "look up",
+            "find ",
+            "show me",
+            "test ",
+        )
+        durable_markers = (
+            "i like",
+            "i love",
+            "i prefer",
+            "my favorite",
+            "i hate",
+            "i dislike",
+            "i live",
+            "i'm in",
+            "i am in",
+            "i'm from",
+            "i am from",
+            "my location",
+            "i work",
+            "i use",
+            "my goal",
+            "i want to learn",
+        )
+        return any(marker in clean for marker in request_markers) and not any(
+            marker in clean for marker in durable_markers
+        )
+
+    @classmethod
+    def _is_noisy_stored_preference(cls, pref_type: str, pref_value: str, pref_context: str) -> bool:
+        value = (pref_value or "").strip().lower()
+        if pref_type in {"interest", "tool"} and value in {
+            "latest movies",
+            "brave search",
+            "search",
+            "test",
+        }:
+            return True
+        if pref_type in {"interest", "tool"} and cls._preference_context_looks_transient(pref_context):
+            return True
+        if pref_type != "location" and any(
+            marker in (pref_context or "").lower()
+            for marker in ("tell me about", "what can you tell", "what is ", "what are ")
+        ):
+            return True
+        return False
 
     def add_site(self, name: str, url: str, description: Optional[str] = None) -> int:
         """Add a new site to the database.
@@ -2028,8 +2118,31 @@ class SupabaseClient:
         """
         conn = None
         try:
+            preference_type = self._normalize_preference_type(preference_type)
+            preference_value = self._clean_preference_value(preference_value)
+            if not user_id or not preference_type or not preference_value:
+                return -1
+            confidence = max(0.0, min(1.0, float(confidence)))
+
             conn = self._get_connection()
             cur = conn.cursor()
+
+            # Reuse existing casing/value when this is only a case/spacing duplicate.
+            cur.execute(
+                """
+                SELECT preference_value
+                FROM user_preferences
+                WHERE user_id = %s
+                  AND preference_type = %s
+                  AND lower(regexp_replace(preference_value, '\\s+', ' ', 'g')) = lower(%s)
+                ORDER BY confidence DESC, updated_at DESC
+                LIMIT 1
+                """,
+                (user_id, preference_type, preference_value),
+            )
+            existing = cur.fetchone()
+            if existing:
+                preference_value = existing[0]
 
             # Use the database function to update or insert the preference
             cur.execute(
@@ -2111,6 +2224,64 @@ class SupabaseClient:
         finally:
             if conn:
                 conn.close()
+
+    def get_relevant_user_preferences(
+        self,
+        user_id: str,
+        query: str,
+        min_confidence: float = 0.65,
+        active_only: bool = True,
+        limit: int = 8,
+    ) -> List[Dict[str, Any]]:
+        """Return user memories ranked for the current question.
+
+        This intentionally stays lightweight: no schema change and no embedding
+        dependency for memories. Stable identity-like memories get a small global
+        bonus, while query/value/context token overlap does the main ranking.
+        """
+        preferences = self.get_user_preferences(user_id, min_confidence, active_only)
+        if not preferences:
+            return []
+
+        query_tokens = self._preference_tokens(query)
+        local_query = bool(re.search(r"\b(near|around|local|nearby|in my area|weather|movies|restaurants)\b", query or "", re.I))
+        always_include = {
+            item.strip().lower()
+            for item in os.getenv("CHAT_ALWAYS_INCLUDE_MEMORY_TYPES", "location,background,trait,goal").split(",")
+            if item.strip()
+        }
+
+        ranked: List[Tuple[float, Dict[str, Any]]] = []
+        for pref in preferences:
+            pref_type = self._normalize_preference_type(pref.get("preference_type", ""))
+            pref_value = pref.get("preference_value", "")
+            pref_context = pref.get("context", "")
+            if self._is_noisy_stored_preference(pref_type, pref_value, pref_context):
+                continue
+            memory_tokens = self._preference_tokens(f"{pref_type} {pref_value} {pref_context}")
+            value_tokens = self._preference_tokens(pref_value)
+            confidence = float(pref.get("confidence") or 0.0)
+
+            overlap = len(query_tokens & memory_tokens)
+            value_overlap = len(query_tokens & value_tokens)
+            score = 0.0
+            if query_tokens:
+                score += min(1.0, overlap / max(1, min(len(query_tokens), 8))) * 0.65
+                score += min(1.0, value_overlap / max(1, len(value_tokens) or 1)) * 0.45
+            score += confidence * 0.15
+            if pref_type == "location" and local_query:
+                score += 0.55
+            if pref_type in always_include:
+                score += 0.12
+
+            pref = dict(pref)
+            pref["preference_type"] = pref_type
+            pref["relevance_score"] = round(score, 4)
+            if score >= 0.2 or pref_type in always_include:
+                ranked.append((score, pref))
+
+        ranked.sort(key=lambda item: (item[0], item[1].get("confidence") or 0.0), reverse=True)
+        return [pref for _, pref in ranked[: max(1, int(limit))]]
 
     def deactivate_user_preference(self, preference_id: int) -> bool:
         """Deactivate a user preference.
