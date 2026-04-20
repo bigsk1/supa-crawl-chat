@@ -187,12 +187,18 @@ The frontend communicates with the backend through a structured API layer:
    - Loads conversation history for the session from `/api/chat/history`
 3. User sends a message:
    - Message is displayed in the chat interface
-   - Request is sent to `/api/chat` with the message and session information
+   - Request is sent to `/api/chat` with the message, session information, profile, and selected context source mode
+   - Context source mode controls retrieval routing:
+     - `auto`: crawled-site context with the server's configured Brave fallback policy
+     - `indexed`: crawled-site context only
+     - `web`: crawled-site context plus forced Brave web context
+     - `none`: no indexed or web context
    - "Thinking" indicator is displayed
    - Response is received and displayed in the chat
    - Chat history is updated
 4. User can:
    - Change the active profile
+   - Change the context source mode
    - Clear the conversation history
    - Copy the session ID for reference
    - View and manage preferences extracted from the conversation

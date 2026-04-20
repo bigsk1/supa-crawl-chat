@@ -1540,11 +1540,12 @@ Extract up to 2 memories, prioritizing stable facts over temporary intent.
 
         return context
 
-    def get_response(self, query: str) -> str:
+    def get_response(self, query: str, use_crawl_context: bool = True) -> str:
         """Get a response from the LLM based on the query and relevant context.
 
         Args:
             query: The user's query.
+            use_crawl_context: Whether to search crawled pages and attach RAG context.
 
         Returns:
             The LLM's response.
@@ -1558,6 +1559,8 @@ Extract up to 2 memories, prioritizing stable facts over temporary intent.
         is_greeting = self.should_skip_crawl_rag_for_message(query)
         if is_greeting:
             console.print(f"[dim]DEBUG: Skipping crawl RAG for this turn (greeting / small-talk path)[/dim]")
+        elif not use_crawl_context:
+            console.print(f"[dim]DEBUG: Crawl RAG disabled for this turn by context routing[/dim]")
 
         # Add the user message to the conversation history
         self.add_user_message(query)
@@ -1693,7 +1696,7 @@ Extract up to 2 memories, prioritizing stable facts over temporary intent.
             return response_text
 
         # Determine if this is likely a query about a technical term or project name
-        if is_technical_pattern and not is_greeting:
+        if use_crawl_context and is_technical_pattern and not is_greeting:
             console.print(f"[yellow]Detected potential technical term or project name: '{clean_query}'[/yellow]")
             console.print(f"[yellow]Attempting direct keyword search...[/yellow]")
 
@@ -1752,40 +1755,42 @@ Extract up to 2 memories, prioritizing stable facts over temporary intent.
                 traceback.print_exc()
                 # Continue with regular search if keyword search fails
 
-        # If this is a follow-up question, try to extract relevant entities from the assistant's last response
-        if is_followup and last_assistant_message:
-            try:
-                # Extract key entities from the last response
-                entity_prompt = f"""Extract the most important entities (names, technical terms, concepts) from this text: "{last_assistant_message}"
+        results = []
+        if use_crawl_context:
+            # If this is a follow-up question, try to extract relevant entities from the assistant's last response
+            if is_followup and last_assistant_message:
+                try:
+                    # Extract key entities from the last response
+                    entity_prompt = f"""Extract the most important entities (names, technical terms, concepts) from this text: "{last_assistant_message}"
 
         Return only the entities as a comma-separated list. Limit to 3-5 most important entities."""
 
-                entity_response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[{"role": "user", "content": entity_prompt}],
-                    temperature=_openai_chat_temperature(self.model, 0.3),
-                    **_openai_chat_token_kwargs(self.model, 100),
-                )
+                    entity_response = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=[{"role": "user", "content": entity_prompt}],
+                        temperature=_openai_chat_temperature(self.model, 0.3),
+                        **_openai_chat_token_kwargs(self.model, 100),
+                    )
 
-                entities = entity_response.choices[0].message.content.strip()
-                console.print(f"[blue]Extracted entities from previous response: {entities}[/blue]")
+                    entities = entity_response.choices[0].message.content.strip()
+                    console.print(f"[blue]Extracted entities from previous response: {entities}[/blue]")
 
-                # Create an enhanced query combining the original query with the entities
-                enhanced_query = f"{query} {entities}"
-                console.print(f"[blue]Enhanced query: {enhanced_query}[/blue]")
+                    # Create an enhanced query combining the original query with the entities
+                    enhanced_query = f"{query} {entities}"
+                    console.print(f"[blue]Enhanced query: {enhanced_query}[/blue]")
 
-                # Search with the enhanced query
-                results = self.search_for_context(enhanced_query)
-            except Exception as e:
-                console.print(f"[red]Error enhancing query with entities: {e}[/red]")
-                # Fall back to regular search
+                    # Search with the enhanced query
+                    results = self.search_for_context(enhanced_query)
+                except Exception as e:
+                    console.print(f"[red]Error enhancing query with entities: {e}[/red]")
+                    # Fall back to regular search
+                    results = self.search_for_context(query)
+            else:
+                # Regular search for non-follow-up questions
                 results = self.search_for_context(query)
-        else:
-            # Regular search for non-follow-up questions
-            results = self.search_for_context(query)
 
         # If we still don't have good results for technical terms, try variations
-        if is_technical_pattern and (not results or len(results) < 2):
+        if use_crawl_context and is_technical_pattern and (not results or len(results) < 2):
             console.print(f"[yellow]Few or no results for technical term, trying variations...[/yellow]")
             # Try different variations
             variations = [
@@ -1829,7 +1834,7 @@ Extract up to 2 memories, prioritizing stable facts over temporary intent.
                 results = self.search_for_context(query)
 
         # Format the context
-        context = self.format_context(results)
+        context = self.format_context(results) if use_crawl_context else ""
         has_rag_hits = bool(results) and ("NO RELEVANT DATABASE RESULTS" not in context)
 
         # Add more detailed logging about search results

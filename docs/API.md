@@ -96,6 +96,8 @@ When **`WEBUI_PASSWORD`** is set, the React app obtains a JWT and sends **`Autho
 | `CRAWL_SITEMAP_ALLOW_EXTERNAL` | If true, sitemap/llms.txt expansion may include public external hosts. Default is same-host only. |
 | `CRAWL_MAX_REDIRECTS` | Redirect hops allowed during app-side validated sitemap fetches. |
 | `CRAWL_MAX_CONTENT_CHARS` | Maximum characters stored/indexed per crawled page after encoded-noise cleanup. |
+| `BRAVE_WEB_CONTEXT` | Default web-context merge policy for chat `context_mode=auto`; per-request `context_mode=web/indexed/none` can override routing. |
+| `CHAT_RESULT_LIMIT` / `CHAT_SIMILARITY_THRESHOLD` | Default crawled-content retrieval settings for chat when no per-request override is provided. |
 
 Copy **`/.env.example`** for full project variables (crawl, chat, Brave, logging, etc.).
 
@@ -138,7 +140,19 @@ curl -sS -X POST "$BASE/api/chat" \
   -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
   -d '{"message":"What is on the site?","session_id":"demo","user_id":"demo"}'
+
+# Chat with explicit source routing: auto | indexed | web | none
+curl -sS -X POST "$BASE/api/chat?context_mode=indexed" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"What sites do I have crawled?","session_id":"demo","user_id":"demo"}'
 ```
+
+`POST /api/chat` keeps `context_mode=auto` by default for compatibility. `auto`
+uses crawled-site context plus the server's configured Brave fallback policy,
+`indexed` disables Brave and uses only stored crawls, `web` forces Brave web
+context while still allowing indexed context, and `none` disables both indexed
+and web context for a plain model response.
 
 ---
 

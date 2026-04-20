@@ -6,6 +6,8 @@ import { getWebUiToken } from '@/lib/authStorage';
 const API_BASE_URL = '/api';
 const API_KEY = import.meta.env.VITE_API_KEY as string | undefined;
 
+export type ChatContextMode = 'auto' | 'indexed' | 'web' | 'none';
+
 const jsonHeaders = (): Record<string, string> => {
   const h: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -157,7 +159,8 @@ export const api = {
     message: string,
     profile?: string,
     user_id?: string,
-    session_id?: string
+    session_id?: string,
+    context_mode: ChatContextMode = 'auto'
   ): Promise<any> => {
     const is_greeting = isSimpleGreetingMessage(message);
 
@@ -175,11 +178,10 @@ export const api = {
       session_id
     };
 
-    // Set query parameters - for greetings, we don't need context
+    // Source routing is explicit; retrieval thresholds/limits come from the server/profile by default.
     const queryParams = new URLSearchParams({
       include_context: is_greeting ? 'false' : 'true',
-      result_limit: '10',  // Increase result limit for better coverage
-      similarity_threshold: '0.6'  // Lower threshold to catch more potential matches
+      context_mode
     });
 
     // Try each URL until we get a successful response

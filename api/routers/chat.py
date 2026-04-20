@@ -49,6 +49,7 @@ class ChatResponse(BaseModel):
     response: str
     session_id: str
     user_id: Optional[str] = None
+    context_mode: str = "auto"
     context: Optional[List[Dict[str, Any]]] = None
     conversation_history: Optional[List[Message]] = None
     brave_used: bool = False
@@ -114,6 +115,31 @@ class UserPreferenceResponse(BaseModel):
     count: int
     user_id: str
 
+CHAT_CONTEXT_MODES = {"auto", "indexed", "web", "none"}
+CHAT_CONTEXT_MODE_ALIASES = {
+    "default": "auto",
+    "crawl": "indexed",
+    "crawled": "indexed",
+    "indexed_only": "indexed",
+    "local": "indexed",
+    "off": "none",
+    "disabled": "none",
+}
+
+
+def normalize_context_mode(mode: Optional[str]) -> str:
+    normalized = (mode or "auto").strip().lower().replace("-", "_")
+    normalized = CHAT_CONTEXT_MODE_ALIASES.get(normalized, normalized)
+    if normalized not in CHAT_CONTEXT_MODES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Invalid context_mode. Use one of: auto, indexed, web, none."
+            ),
+        )
+    return normalized
+
+
 # Dependency to get a ChatBot instance
 def get_chat_bot(
     model: Optional[str] = None,
@@ -146,6 +172,13 @@ async def chat(
     result_limit: Optional[int] = Query(None, description="Maximum number of search results"),
     similarity_threshold: Optional[float] = Query(None, description="Similarity threshold (0-1)"),
     include_context: bool = Query(True, description="When true, run vector search for RAG context (skipped for greetings)"),
+    context_mode: str = Query(
+        "auto",
+        description=(
+            "Context source routing: auto uses indexed crawls plus configured web fallback; "
+            "indexed uses only crawled content; web forces Brave web context; none disables all context."
+        ),
+    ),
     include_history: bool = Query(False, description="Include conversation history in the response"),
 ):
     """
@@ -162,6 +195,11 @@ async def chat(
     brave_sources: Optional[List[Dict[str, Any]]] = None
     brave_preview: Optional[str] = None
     try:
+        context_mode = normalize_context_mode(context_mode)
+        use_indexed_context = include_context and context_mode != "none"
+        allow_brave_context = context_mode in {"auto", "web"}
+        force_brave_context = context_mode == "web"
+
         # Generate a session ID if not provided
         session_id = chat_request.session_id or str(uuid.uuid4())
 
@@ -190,7 +228,7 @@ async def chat(
         # For true greetings, skip retrieval. Otherwise pull RAG context so we can echo it
         # in the response payload (the main prompt path inside get_response() also retrieves).
         context = None
-        if include_context and not is_greeting and not is_inventory_query:
+        if use_indexed_context and not is_greeting and not is_inventory_query:
             try:
                 context = chat_bot.search_for_context(chat_request.message)
             except Exception as search_error:
@@ -198,7 +236,7 @@ async def chat(
                 context = None
 
         # Modify the system prompt for the first message to focus on crawled sites
-        if is_first_message and not is_greeting and not is_inventory_query:
+        if use_indexed_context and is_first_message and not is_greeting and not is_inventory_query:
             # Get all available sites to mention in the greeting
             try:
                 sites = chat_bot.crawler.db_client.get_all_sites()
@@ -228,9 +266,9 @@ async def chat(
         # ChatBot._prepare_messages_for_llm so the CLI and API grounded the same way.
 
         # Optional Brave Search LLM Context (web grounding) — BRAVE_API_KEY + BRAVE_WEB_CONTEXT
-        if not is_greeting and not is_inventory_query:
+        if allow_brave_context and not is_greeting and not is_inventory_query:
             try:
-                brave_mode = (os.getenv("BRAVE_WEB_CONTEXT") or "when_empty").strip()
+                brave_mode = "always" if force_brave_context else (os.getenv("BRAVE_WEB_CONTEXT") or "when_empty").strip()
                 weak_thr = float(os.getenv("BRAVE_WEAK_THRESHOLD", "0.35"))
                 ctx_list = context if isinstance(context, list) else None
                 if should_merge_brave(
@@ -266,7 +304,10 @@ async def chat(
 
         # Get response
         try:
-            response = chat_bot.get_response(chat_request.message)
+            response = chat_bot.get_response(
+                chat_request.message,
+                use_crawl_context=use_indexed_context,
+            )
         except Exception as response_error:
             logger.exception("get_response failed: %s", response_error)
             response = f"I'm sorry, but I encountered an error processing your request. Error details: {str(response_error)}"
@@ -276,6 +317,7 @@ async def chat(
             "response": response,
             "session_id": session_id,
             "user_id": chat_request.user_id,
+            "context_mode": context_mode,
             "brave_used": brave_used,
             "brave_sources": brave_sources,
             "brave_preview": brave_preview,
@@ -304,13 +346,14 @@ async def chat(
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
         ctx_n = len(context) if isinstance(context, list) else (0 if context is None else 1)
         logger.info(
-            "chat_ok session=%s user=%s profile=%s greeting=%s include_ctx=%s ctx_items=%s "
+            "chat_ok session=%s user=%s profile=%s greeting=%s include_ctx=%s context_mode=%s ctx_items=%s "
             "brave=%s brave_chars=%s msg_chars=%s reply_chars=%s ms=%s",
             session_id,
             chat_request.user_id or "-",
             chat_request.profile or "default",
             is_greeting,
             include_context,
+            context_mode,
             ctx_n,
             brave_used,
             brave_chars,

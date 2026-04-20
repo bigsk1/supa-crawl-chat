@@ -321,10 +321,13 @@ export interface ChatRequest {
   profile?: string;
 }
 
+export type ChatContextMode = 'auto' | 'indexed' | 'web' | 'none';
+
 export interface ChatResponse {
   response: string;
   session_id: string;
   user_id: string | null;
+  context_mode?: ChatContextMode;
   context?: SearchResult[];
   conversation_history?: ChatMessage[];
 }
@@ -570,7 +573,13 @@ export const apiService = {
   },
 
   // Chat methods
-  sendMessage: async (message: string, profile: string, sessionId?: string, userName?: string): Promise<ChatMessage> => {
+  sendMessage: async (
+    message: string,
+    profile: string,
+    sessionId?: string,
+    userName?: string,
+    contextMode: ChatContextMode = 'auto'
+  ): Promise<ChatMessage> => {
     try {
       const payload: any = {
         message,
@@ -587,11 +596,10 @@ export const apiService = {
         payload.session_id = sessionId;
       }
 
-      // Add query parameters to always include context and search settings
+      // Let the server/profile own retrieval limits and thresholds.
       const params = {
-        include_context: true,  // Always include search context
-        result_limit: 10,       // Reasonable default
-        similarity_threshold: 0.5 // Reasonable default
+        include_context: contextMode !== 'none',
+        context_mode: contextMode
       };
 
       const response = await apiClient.post('/chat/', payload, { params });
