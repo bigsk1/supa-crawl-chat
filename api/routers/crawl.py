@@ -240,6 +240,7 @@ def crawl_in_background(
                 site_description,
                 max_urls=max_urls,
                 needs_description=needs_description,
+                raise_on_error=True,
                 **options,
             )
         else:
@@ -248,6 +249,8 @@ def crawl_in_background(
                 site_name,
                 site_description,
                 needs_description=needs_description,
+                raise_on_error=True,
+                max_urls=max_urls,
                 **options,
             )
 
@@ -436,10 +439,10 @@ async def crawl(
         except UnsafeURL as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
+        advanced_options = _advanced_options(crawl_data)
         crawler = WebCrawler()
         site_id = _ensure_site(crawler, crawl_data)
         job_options = crawl_data.model_dump()
-        advanced_options = _advanced_options(crawl_data)
         job_id = crawler.db_client.create_crawl_job(site_id, crawl_data.url, job_options)
 
         background_tasks.add_task(

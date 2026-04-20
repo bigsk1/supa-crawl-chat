@@ -657,7 +657,9 @@ class WebCrawler:
 
     def crawl_site(self, url: str, site_name: Optional[str] = None,
                   description: Optional[str] = None, start_only: bool = False,
-                  needs_description: bool = False, **advanced_options) -> int:
+                  needs_description: bool = False, raise_on_error: bool = False,
+                  max_urls: Optional[int] = None,
+                  **advanced_options) -> int:
         """Crawl a site, generate embeddings, and store in the database.
 
         Args:
@@ -666,6 +668,8 @@ class WebCrawler:
             description: Optional description of the site.
             start_only: If True, only start the crawl and return the site ID without waiting for completion.
             needs_description: If True, force generation of a description even if one exists.
+            raise_on_error: If True, raise when the crawl returns no pages or fails.
+            max_urls: Maximum number of returned pages to process/store. None means no app-side cap.
             **advanced_options: Additional options for the crawl.
                 - follow_external_links: Whether to follow external links.
                 - include_patterns: List of URL patterns to include.
@@ -742,8 +746,15 @@ class WebCrawler:
             pages = self.process_crawl_results(crawl_results)
 
             if not pages:
-                print_warning("No pages found in crawl results.")
+                message = "No pages found in crawl results."
+                print_warning(message)
+                if raise_on_error:
+                    raise RuntimeError(message)
                 return site_id
+
+            if max_urls and max_urls > 0 and len(pages) > max_urls:
+                print_warning(f"Limiting crawl results to {max_urls} page(s) for processing (from {len(pages)} total)")
+                pages = pages[:max_urls]
 
             print_info(f"Found {len(pages)} pages.")
 
@@ -775,6 +786,8 @@ class WebCrawler:
         except Exception as e:
             print_error(f"Error during crawl: {e}")
             print_info("Crawl failed. Please check the API configuration and try again.")
+            if raise_on_error:
+                raise
             return site_id
 
         return site_id
@@ -810,7 +823,8 @@ class WebCrawler:
 
     def crawl_sitemap(self, sitemap_url: str, site_name: Optional[str] = None,
                      description: Optional[str] = None, max_urls: Optional[int] = None,
-                     start_only: bool = False, needs_description: bool = False, **advanced_options) -> int:
+                     start_only: bool = False, needs_description: bool = False,
+                     raise_on_error: bool = False, **advanced_options) -> int:
         """Crawl a sitemap, generate embeddings, and store in the database.
 
         Args:
@@ -820,6 +834,7 @@ class WebCrawler:
             max_urls: Maximum number of URLs to crawl from the sitemap. If None, uses the MAX_URLS env var.
             start_only: If True, only start the crawl and return the site ID without waiting for completion.
             needs_description: If True, force generation of a description even if one exists.
+            raise_on_error: If True, raise when the crawl returns no pages or fails.
             **advanced_options: Additional options for the crawl.
                 - follow_external_links: Whether to follow external links.
                 - include_patterns: List of URL patterns to include.
@@ -912,10 +927,13 @@ class WebCrawler:
                 text = raw.decode("utf-8", errors="replace")
                 urls = _extract_urls_from_text_or_markdown(text)
                 if not urls:
-                    print_error(
+                    message = (
                         "Not valid XML sitemap and no http(s) URLs found in plain text/Markdown. "
                         "Use a real sitemap.xml URL, or for llms.txt-style indexes the file must list links."
                     )
+                    print_error(message)
+                    if raise_on_error:
+                        raise RuntimeError(message)
                     return site_id
                 print_info(
                     f"Non-XML document (e.g. llms.txt/Markdown); extracted {len(urls)} URL(s) from links and bare URLs."
@@ -936,7 +954,10 @@ class WebCrawler:
                             urls.append(loc.text.strip())
 
                 if not urls:
-                    print_warning(f"No URLs found in sitemap: {sitemap_url}")
+                    message = f"No URLs found in sitemap: {sitemap_url}"
+                    print_warning(message)
+                    if raise_on_error:
+                        raise RuntimeError(message)
                     return site_id
 
             print_info(f"Found {len(urls)} URLs in sitemap")
@@ -960,7 +981,10 @@ class WebCrawler:
             urls = safe_urls
 
             if not urls:
-                print_warning("No safe crawlable URLs remained after sitemap safety filtering.")
+                message = "No safe crawlable URLs remained after sitemap safety filtering."
+                print_warning(message)
+                if raise_on_error:
+                    raise RuntimeError(message)
                 return site_id
 
             # Limit the number of URLs to crawl based on max_urls
@@ -1049,7 +1073,10 @@ class WebCrawler:
                     print_error(f"Error crawling URL {url}: {e}")
 
             if not all_pages:
-                print_warning("No pages were successfully crawled from the sitemap.")
+                message = "No pages were successfully crawled from the sitemap."
+                print_warning(message)
+                if raise_on_error:
+                    raise RuntimeError(message)
                 return site_id
 
             print_info(f"Successfully crawled {len(all_pages)} pages from sitemap.")
@@ -1089,6 +1116,8 @@ class WebCrawler:
         except Exception as e:
             print_error(f"Error processing sitemap: {e}")
             print_info("Sitemap crawl failed. Please check the API configuration and try again.")
+            if raise_on_error:
+                raise
             return site_id
 
     def search(self, query: str, use_embedding: bool = True,

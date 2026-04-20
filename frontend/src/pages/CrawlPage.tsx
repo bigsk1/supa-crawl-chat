@@ -67,7 +67,7 @@ const CrawlPage = () => {
   const [downloadImages, setDownloadImages] = useState(false);
   const [downloadVideos, setDownloadVideos] = useState(false);
   const [downloadFiles, setDownloadFiles] = useState(false);
-  const [followRedirects, setFollowRedirects] = useState(true);
+  const [followRedirects, setFollowRedirects] = useState(false);
   const [maxDepth, setMaxDepth] = useState(3);
   const [extractionType, setExtractionType] = useState('basic');
   const [cssSelector, setCssSelector] = useState('');
@@ -195,17 +195,24 @@ const CrawlPage = () => {
       console.log('Frontend crawl params:', frontendParams);
       setDebugData(frontendParams);
       
+      const isSitemapCrawl = depth === 3;
+      const crawlDepth = depth === 1 ? 0 : depth === 2 ? (showAdvanced ? maxDepth : 1) : undefined;
+
       // Transform frontend parameters to API parameters
       const apiParams: any = {
         url,
         site_name: name || url,
         site_description: description || null,
-        is_sitemap: depth === 3, // Map depth=3 (Deep Crawl) to is_sitemap=true
+        is_sitemap: isSitemapCrawl, // Map depth=3 (Deep Crawl) to is_sitemap=true
         max_urls: maxPages,
         follow_external_links: followExternalLinks,
         include_patterns: includePatterns ? includePatterns.split(',').map(p => p.trim()) : [],
         exclude_patterns: excludePatterns ? excludePatterns.split(',').map(p => p.trim()) : []
       };
+
+      if (crawlDepth !== undefined) {
+        apiParams.max_depth = crawlDepth;
+      }
       
       // Add advanced options if they are set
       if (showAdvanced) {
@@ -225,8 +232,9 @@ const CrawlPage = () => {
         if (downloadFiles) apiParams.download_files = downloadFiles;
         
         // Link options
-        if (followRedirects !== true) apiParams.follow_redirects = followRedirects;
-        if (maxDepth !== 3) apiParams.max_depth = maxDepth;
+        if (followRedirects) apiParams.follow_redirects = followRedirects;
+        if (depth === 2) apiParams.max_depth = maxDepth;
+        else if (isSitemapCrawl && maxDepth !== 3) apiParams.max_depth = maxDepth;
         
         // Extraction options
         if (extractionType !== 'basic') apiParams.extraction_type = extractionType;
@@ -247,7 +255,12 @@ const CrawlPage = () => {
       
     } catch (error) {
       console.error('Error starting crawl:', error);
-      createNotification('Error', 'Failed to start crawl. Please try again.', 'error', true);
+      const detail = axios.isAxiosError(error)
+        ? error.response?.data?.detail || error.message
+        : error instanceof Error
+          ? error.message
+          : 'Please try again.';
+      createNotification('Error', `Failed to start crawl. ${detail}`, 'error', true);
     } finally {
       setIsSubmitting(false);
     }
@@ -273,7 +286,7 @@ const CrawlPage = () => {
     setDownloadImages(false);
     setDownloadVideos(false);
     setDownloadFiles(false);
-    setFollowRedirects(true);
+    setFollowRedirects(false);
     setMaxDepth(3);
     setExtractionType('basic');
     setCssSelector('');
@@ -666,4 +679,4 @@ const CrawlPage = () => {
   );
 };
 
-export default CrawlPage; 
+export default CrawlPage;
