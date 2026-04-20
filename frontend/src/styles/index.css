@@ -230,6 +230,11 @@
   @apply z-50 !important;
 }
 
+/* Tooltips must stack above Select/Dropdown poppers (also z-50) */
+[data-radix-popper-content-wrapper]:has([role='tooltip']) {
+  z-index: 100 !important;
+}
+
 .tooltip-content {
   @apply bg-popover text-popover-foreground border border-border rounded-md shadow-md px-3 py-1.5 text-sm;
 }

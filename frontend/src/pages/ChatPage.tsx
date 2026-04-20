@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import toast from 'react-hot-toast';
 import { ChatMessage, Profile } from '@/api/apiService';
-import { api, isSimpleGreetingMessage } from '@/api/apiWrapper';
+import { api, isSimpleGreetingMessage, type ChatContextMode } from '@/api/apiWrapper';
 import { v4 as uuidv4 } from 'uuid';
 import { useUser } from '@/context/UserContext';
 import { Button } from '@/components/ui/button';
@@ -37,6 +37,30 @@ const CHAT_SESSIONS_KEY = 'chat_sessions';
 const CURRENT_SESSION_ID_KEY = 'current_session_id';
 const CHAT_INITIALIZED_KEY = 'chat_initialized';
 const CHAT_HISTORY_CACHE_PREFIX = 'chat_history_cache:';
+const CHAT_CONTEXT_MODE_KEY = 'chat_context_mode';
+
+const CHAT_CONTEXT_MODE_OPTIONS: { value: ChatContextMode; label: string; description: string }[] = [
+  {
+    value: 'auto',
+    label: 'Auto sources',
+    description: 'Use crawled pages first, then add Brave web context when indexed results are empty, weak, or explicitly requested.',
+  },
+  {
+    value: 'indexed',
+    label: 'Indexed only',
+    description: 'Use only content already stored from your crawled sites. Brave web context is disabled.',
+  },
+  {
+    value: 'web',
+    label: 'Web + indexed',
+    description: 'Force Brave web context for this chat while still allowing relevant crawled-site context.',
+  },
+  {
+    value: 'none',
+    label: 'No context',
+    description: 'Skip crawled-site retrieval and Brave context. The model answers from the conversation and its base knowledge.',
+  },
+];
 
 const chatInitializedKey = (sessionId: string) => `${CHAT_INITIALIZED_KEY}:${sessionId}`;
 const chatHistoryCacheKey = (sessionId: string) => `${CHAT_HISTORY_CACHE_PREFIX}${sessionId}`;
@@ -96,6 +120,31 @@ const setStoredChatInitialized = (sessionId: string, initialized: boolean) => {
   localStorage.setItem(CHAT_INITIALIZED_KEY, value);
 };
 
+const isChatContextMode = (value: string | null): value is ChatContextMode =>
+  value === 'auto' || value === 'indexed' || value === 'web' || value === 'none';
+
+const getStoredChatContextMode = (): ChatContextMode => {
+  const stored = localStorage.getItem(CHAT_CONTEXT_MODE_KEY);
+  return isChatContextMode(stored) ? stored : 'auto';
+};
+
+const getContextModeDescription = (mode: ChatContextMode): string =>
+  CHAT_CONTEXT_MODE_OPTIONS.find((option) => option.value === mode)?.description ||
+  CHAT_CONTEXT_MODE_OPTIONS[0].description;
+
+const messageRenderKey = (message: Message, index: number): string => {
+  const stableParts = [
+    message.id,
+    message.role,
+    message.created_at,
+    message.content?.slice(0, 48),
+  ]
+    .filter(Boolean)
+    .join(':');
+
+  return `${stableParts || 'message'}:${index}`;
+};
+
 const ChatPage = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [message, setMessage] = useState('');
@@ -117,6 +166,7 @@ const ChatPage = () => {
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const { extractPreferencesFromText, addPreference } = useUser();
   const [preferenceCount, setPreferenceCount] = useState<number | null>(null);
+  const [contextMode, setContextMode] = useState<ChatContextMode>(getStoredChatContextMode);
 
   // Initialize sessions and session ID when component mounts
   useEffect(() => {
@@ -160,6 +210,10 @@ const ChatPage = () => {
     if (!sessionId) return;
     saveCachedChatHistory(sessionId, chatHistory);
   }, [sessionId, chatHistory]);
+
+  useEffect(() => {
+    localStorage.setItem(CHAT_CONTEXT_MODE_KEY, contextMode);
+  }, [contextMode]);
 
   // Create a new session
   const createNewSession = (name: string) => {
@@ -392,7 +446,8 @@ const ChatPage = () => {
         message,
         activeProfile?.name || undefined,
         userProfile?.name || undefined,
-        sessionId || undefined
+        sessionId || undefined,
+        contextMode
       );
       
       // Add assistant response to chat history
@@ -1014,24 +1069,81 @@ const ChatPage = () => {
               </DropdownMenuContent>
             </DropdownMenu>
             
-            <div>
+            <TooltipProvider>
               <Select
                 value={activeProfile?.name}
                 onValueChange={handleProfileChange}
                 disabled={isLoading}
               >
-                <SelectTrigger className="w-[180px] border-white/[0.05] bg-[#171923] text-gray-300">
-                  <SelectValue placeholder="Select a profile" />
-                </SelectTrigger>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <SelectTrigger className="w-[180px] border-white/[0.05] bg-[#171923] text-gray-300">
+                      <SelectValue placeholder="Select a profile" />
+                    </SelectTrigger>
+                  </TooltipTrigger>
+                  <TooltipContent
+                    side="bottom"
+                    className="z-[100] max-w-xs bg-[#171923] border-white/[0.05]"
+                  >
+                    <p className="font-medium text-gray-100">{activeProfile?.name || 'Profile'}</p>
+                    <p className="text-xs text-gray-300">
+                      {activeProfile?.description ||
+                        'Controls the assistant persona, tone, and profile-specific search settings.'}
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
                 <SelectContent className="bg-[#171923] border-white/[0.05]">
                   {profiles.map((profile) => (
-                    <SelectItem key={profile.name} value={profile.name} className="hover:bg-white/[0.06] focus:bg-white/[0.06]">
+                    <SelectItem
+                      key={profile.name}
+                      value={profile.name}
+                      className="hover:bg-white/[0.06] focus:bg-white/[0.06]"
+                    >
                       {profile.name}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-            </div>
+            </TooltipProvider>
+
+            <TooltipProvider>
+              <Select
+                value={contextMode}
+                onValueChange={(value) =>
+                  setContextMode(isChatContextMode(value) ? value : 'auto')
+                }
+                disabled={isLoading}
+              >
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <SelectTrigger className="w-[170px] border-white/[0.05] bg-[#171923] text-gray-300">
+                      <SelectValue placeholder="Sources" />
+                    </SelectTrigger>
+                  </TooltipTrigger>
+                  <TooltipContent
+                    side="bottom"
+                    className="z-[100] max-w-xs bg-[#171923] border-white/[0.05]"
+                  >
+                    <p className="font-medium text-gray-100">
+                      {CHAT_CONTEXT_MODE_OPTIONS.find((option) => option.value === contextMode)?.label ||
+                        'Sources'}
+                    </p>
+                    <p className="text-xs text-gray-300">{getContextModeDescription(contextMode)}</p>
+                  </TooltipContent>
+                </Tooltip>
+                <SelectContent className="bg-[#171923] border-white/[0.05]">
+                  {CHAT_CONTEXT_MODE_OPTIONS.map((option) => (
+                    <SelectItem
+                      key={option.value}
+                      value={option.value}
+                      className="hover:bg-white/[0.06] focus:bg-white/[0.06]"
+                    >
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </TooltipProvider>
 
             {userProfile?.name && preferenceCount !== null && preferenceCount > 0 && (
               <Link
@@ -1075,8 +1187,8 @@ const ChatPage = () => {
                 </div>
               </div>
             ) : (
-              filteredChatHistory.map((msg) => (
-                <div key={msg.id} className="mb-4">
+              filteredChatHistory.map((msg, index) => (
+                <div key={messageRenderKey(msg, index)} className="mb-4">
                   {renderMessage(msg)}
                 </div>
               ))
