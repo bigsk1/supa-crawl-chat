@@ -39,27 +39,27 @@ services:
     security_opt:
       - no-new-privileges
 
-  explorer:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-    container_name: supa-explorer
-    ports:
-      - "8501:8501"
-    env_file:
-      - ../.env
-    volumes:
-      - ../.env:/app/.env:ro
-      - api_logs:/app/log
-    restart: unless-stopped
-    environment:
-      - PYTHONUNBUFFERED=1
-    working_dir: /app/supabase_explorer
-    command: streamlit run supabase_explorer.py --server.address=0.0.0.0
-    networks:
-      - crawl-network
-    security_opt:
-      - no-new-privileges
+  # explorer:
+  #   build:
+  #     context: ..
+  #     dockerfile: docker/Dockerfile
+  #   container_name: supa-explorer
+  #   ports:
+  #     - "8501:8501"
+  #   env_file:
+  #     - ../.env
+  #   volumes:
+  #     - ../.env:/app/.env:ro
+  #     - api_logs:/app/log
+  #   restart: unless-stopped
+  #   environment:
+  #     - PYTHONUNBUFFERED=1
+  #   working_dir: /app/supabase_explorer
+  #   command: streamlit run supabase_explorer.py --server.address=0.0.0.0
+  #   networks:
+  #     - crawl-network
+  #   security_opt:
+  #     - no-new-privileges
 
   frontend:
     build:
