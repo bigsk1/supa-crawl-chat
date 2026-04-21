@@ -1,10 +1,19 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { apiService, Site } from '@/api/apiService';
 import { api } from '@/api/apiWrapper';
 import axios from 'axios';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { RefreshCw, Trash2 } from 'lucide-react';
 import { createNotification } from '@/utils/notifications';
 import { PageHeader } from '@/components/PageHeader';
@@ -17,6 +26,63 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 
+type SitesSortOption =
+  | 'created_desc'
+  | 'created_asc'
+  | 'name_asc'
+  | 'name_desc'
+  | 'url_asc'
+  | 'url_desc'
+  | 'pages_desc'
+  | 'pages_asc'
+  | 'last_crawled_desc'
+  | 'last_crawled_asc'
+  | 'updated_desc'
+  | 'updated_asc';
+
+function siteCreatedTime(site: Site): number {
+  if (!site.created_at) return 0;
+  const t = new Date(site.created_at).getTime();
+  return Number.isNaN(t) ? 0 : t;
+}
+
+function siteOptionalTime(value: string | null | undefined): number {
+  if (!value) return 0;
+  const t = new Date(value).getTime();
+  return Number.isNaN(t) ? 0 : t;
+}
+
+function compareSites(a: Site, b: Site, sort: SitesSortOption): number {
+  switch (sort) {
+    case 'created_desc':
+      return siteCreatedTime(b) - siteCreatedTime(a);
+    case 'created_asc':
+      return siteCreatedTime(a) - siteCreatedTime(b);
+    case 'name_asc':
+      return (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' });
+    case 'name_desc':
+      return (b.name || '').localeCompare(a.name || '', undefined, { sensitivity: 'base' });
+    case 'url_asc':
+      return (a.url || '').localeCompare(b.url || '', undefined, { sensitivity: 'base' });
+    case 'url_desc':
+      return (b.url || '').localeCompare(a.url || '', undefined, { sensitivity: 'base' });
+    case 'pages_desc':
+      return (b.page_count ?? 0) - (a.page_count ?? 0);
+    case 'pages_asc':
+      return (a.page_count ?? 0) - (b.page_count ?? 0);
+    case 'last_crawled_desc':
+      return siteOptionalTime(b.last_crawled_at) - siteOptionalTime(a.last_crawled_at);
+    case 'last_crawled_asc':
+      return siteOptionalTime(a.last_crawled_at) - siteOptionalTime(b.last_crawled_at);
+    case 'updated_desc':
+      return siteOptionalTime(b.updated_at) - siteOptionalTime(a.updated_at);
+    case 'updated_asc':
+      return siteOptionalTime(a.updated_at) - siteOptionalTime(b.updated_at);
+    default:
+      return 0;
+  }
+}
+
 const SitesPage = () => {
   const [sites, setSites] = useState<Site[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -25,6 +91,8 @@ const SitesPage = () => {
   const [refreshing, setRefreshing] = useState(false);
   const [siteToDelete, setSiteToDelete] = useState<Site | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sortBy, setSortBy] = useState<SitesSortOption>('created_desc');
 
   // Load sites on mount; poll in the background without swapping the whole page for a spinner.
   useEffect(() => {
@@ -65,17 +133,8 @@ const SitesPage = () => {
           console.log(`Site ${index} (${site.name || 'unnamed'}) created_at:`, site.created_at);
           console.log(`Formatted date:`, formatDate(site.created_at));
         });
-        
-        // Sort sites by created_at date (newest first)
-        const sortedSites = [...sitesData].sort((a, b) => {
-          // Convert dates to timestamps for comparison
-          const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
-          const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
-          // Sort in descending order (newest first)
-          return dateB - dateA;
-        });
-        
-        setSites(sortedSites);
+
+        setSites(sitesData as Site[]);
       } else {
         console.error('Unexpected sites data format:', sitesData);
         setSites([]);
@@ -92,6 +151,20 @@ const SitesPage = () => {
       }
     }
   };
+
+  const displaySites = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    let list = sites;
+    if (q) {
+      list = sites.filter((site) => {
+        const name = (site.name || '').toLowerCase();
+        const url = (site.url || '').toLowerCase();
+        const desc = (site.description || '').toLowerCase();
+        return name.includes(q) || url.includes(q) || desc.includes(q);
+      });
+    }
+    return [...list].sort((a, b) => compareSites(a, b, sortBy));
+  }, [sites, searchQuery, sortBy]);
 
   const checkApiDirectly = async () => {
     setIsLoading(true);
@@ -226,6 +299,51 @@ const SitesPage = () => {
             Crawl New Site
           </Link>
         </div>
+        {sites.length > 0 ? (
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
+            <div className="flex-1 min-w-[min(100%,220px)] max-w-md space-y-1.5">
+              <Label htmlFor="sites-search" className="text-gray-700 dark:text-gray-300">
+                Search sites
+              </Label>
+              <Input
+                id="sites-search"
+                type="search"
+                placeholder="Filter by name, URL, or description…"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                autoComplete="off"
+                className="border-gray-300 bg-white text-gray-900 placeholder:text-gray-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:placeholder:text-gray-500"
+              />
+            </div>
+            <div className="w-full min-w-[200px] max-w-xs space-y-1.5 sm:w-56">
+              <Label htmlFor="sites-sort" className="text-gray-700 dark:text-gray-300">
+                Sort by
+              </Label>
+              <Select value={sortBy} onValueChange={(v) => setSortBy(v as SitesSortOption)}>
+                <SelectTrigger
+                  id="sites-sort"
+                  className="border-gray-300 bg-white text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+                >
+                  <SelectValue placeholder="Sort" />
+                </SelectTrigger>
+                <SelectContent className="border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
+                  <SelectItem value="created_desc">Date added (newest first)</SelectItem>
+                  <SelectItem value="created_asc">Date added (oldest first)</SelectItem>
+                  <SelectItem value="name_asc">Name (A–Z)</SelectItem>
+                  <SelectItem value="name_desc">Name (Z–A)</SelectItem>
+                  <SelectItem value="url_asc">URL (A–Z)</SelectItem>
+                  <SelectItem value="url_desc">URL (Z–A)</SelectItem>
+                  <SelectItem value="pages_desc">Page count (high → low)</SelectItem>
+                  <SelectItem value="pages_asc">Page count (low → high)</SelectItem>
+                  <SelectItem value="last_crawled_desc">Last crawled (newest)</SelectItem>
+                  <SelectItem value="last_crawled_asc">Last crawled (oldest)</SelectItem>
+                  <SelectItem value="updated_desc">Updated (newest)</SelectItem>
+                  <SelectItem value="updated_asc">Updated (oldest)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       {isLoading ? (
@@ -240,9 +358,25 @@ const SitesPage = () => {
             Try Again
           </Button>
         </div>
+      ) : sites.length > 0 && displaySites.length === 0 ? (
+        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 text-center">
+          <h2 className="text-xl font-semibold mb-2">No matching sites</h2>
+          <p className="mb-4 text-gray-600 dark:text-gray-400">
+            Nothing matches “{searchQuery.trim()}”. Try a different search or clear the filter.
+          </p>
+          <Button type="button" variant="outline" onClick={() => setSearchQuery('')}>
+            Clear search
+          </Button>
+        </div>
       ) : sites.length > 0 ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {sites.map((site) => (
+        <>
+          {searchQuery.trim() ? (
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+              Showing {displaySites.length} of {sites.length} sites
+            </p>
+          ) : null}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {displaySites.map((site) => (
             <div
               key={site.id}
               className="relative bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 hover:shadow-md transition-shadow duration-200 flex flex-col h-full"
@@ -291,6 +425,7 @@ const SitesPage = () => {
             </div>
           ))}
         </div>
+        </>
       ) : (
         <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 text-center">
           <h2 className="text-xl font-semibold mb-4">No Sites Found</h2>
