@@ -29,7 +29,7 @@
     "react-router-dom": "^6.20.0",
     "react-syntax-highlighter": "^16.1.1",
     "remark-gfm": "^4.0.1",
-    "uuid": "^9.0.1"
+    "uuid": "^14.0.0"
   },
   "devDependencies": {
     "@shadcn/ui": "^0.0.4",
