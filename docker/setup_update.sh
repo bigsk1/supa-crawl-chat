@@ -10,41 +10,14 @@ if [ ! -s ".env" ]; then
 fi
 
 # Create the authentication roles script first (00-auth-roles.sql)
-cat > volumes/db/init/00-auth-roles.sql << 'EOL'
+cat > volumes/db/init/001-auth-roles.sql << 'EOL'
 -- Create all the necessary roles for Supabase and PostgREST
 DO $$
 BEGIN
-  -- First create the basic roles
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'anon') THEN
-    CREATE ROLE anon;
-    RAISE NOTICE 'Created anon role';
-  END IF;
-
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authenticated') THEN
-    CREATE ROLE authenticated;
-    RAISE NOTICE 'Created authenticated role';
-  END IF;
-
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'service_role') THEN
-    CREATE ROLE service_role;
-    RAISE NOTICE 'Created service_role role';
-  END IF;
-
-  -- Then create authenticator and grant the basic roles to it
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authenticator') THEN
-    CREATE ROLE authenticator WITH LOGIN;
-    RAISE NOTICE 'Created authenticator role';
-  END IF;
-  
   -- Create admin roles
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'supabase_admin') THEN
     CREATE ROLE supabase_admin WITH LOGIN SUPERUSER CREATEDB CREATEROLE REPLICATION BYPASSRLS;
     RAISE NOTICE 'Created supabase_admin role';
-  END IF;
-  
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'supabase_auth_admin') THEN
-    CREATE ROLE supabase_auth_admin WITH LOGIN;
-    RAISE NOTICE 'Created supabase_auth_admin role';
   END IF;
   
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'supabase_storage_admin') THEN
@@ -52,14 +25,8 @@ BEGIN
     RAISE NOTICE 'Created supabase_storage_admin role';
   END IF;
 
-  -- Grant roles to authenticator
-  GRANT anon TO authenticator;
-  GRANT authenticated TO authenticator;
-  GRANT service_role TO authenticator;
-
   -- Grant privileges
   GRANT ALL PRIVILEGES ON DATABASE postgres TO supabase_admin;
-  GRANT USAGE ON SCHEMA public TO authenticator, anon, authenticated, service_role;
 
   RAISE NOTICE 'All roles created and configured successfully';
 END
@@ -99,12 +66,6 @@ BEGIN
     EXECUTE format('ALTER ROLE postgres WITH PASSWORD %L', postgres_password);
     RAISE NOTICE 'Set password for postgres';
     
-    -- Set password for other roles if they exist
-    IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'supabase_auth_admin') THEN
-        EXECUTE format('ALTER ROLE supabase_auth_admin WITH PASSWORD %L', postgres_password);
-        RAISE NOTICE 'Set password for supabase_auth_admin';
-    END IF;
-    
     IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'supabase_storage_admin') THEN
         EXECUTE format('ALTER ROLE supabase_storage_admin WITH PASSWORD %L', postgres_password);
         RAISE NOTICE 'Set password for supabase_storage_admin';
@@ -117,7 +78,7 @@ EOL
 
 # Download Supabase initialization scripts for the database
 echo "Downloading Supabase initialization scripts..."
-curl -s https://raw.githubusercontent.com/supabase/postgres/develop/migrations/db/init-scripts/00000000000000-initial-schema.sql > volumes/db/init/00-initial-schema.sql
+curl -s https://raw.githubusercontent.com/supabase/postgres/develop/migrations/db/init-scripts/00000000000000-initial-schema.sql > volumes/db/init/001-initial-schema.sql
 curl -s https://raw.githubusercontent.com/supabase/postgres/develop/migrations/db/init-scripts/00000000000001-auth-schema.sql > volumes/db/init/01-auth-schema.sql
 curl -s https://raw.githubusercontent.com/supabase/postgres/develop/migrations/db/init-scripts/00000000000003-post-setup.sql > volumes/db/init/03-post-setup.sql
 
