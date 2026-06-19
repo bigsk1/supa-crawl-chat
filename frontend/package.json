@@ -21,7 +21,7 @@
     "@radix-ui/react-tooltip": "^1.1.8",
     "@tanstack/react-virtual": "^3.13.24",
     "axios": "1.16.0",
-    "dompurify": "^3.4.9",
+    "dompurify": "^3.4.11",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-hot-toast": "^2.4.1",
